@@ -1,0 +1,21 @@
+# Data and documents
+*.csv
+*.docx
+*.json
+
+# Claude instructions
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Database output
+*.db
+
+# Mac system files
+.DS_Store

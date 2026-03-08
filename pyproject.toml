@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "antigen-screener"
+version = "0.1.0"
+description = "Cross-reactivity antigen screener for short peptide sequences"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = {text = "MIT"}
+authors = [
+    {name = "Lukas Idman"},
+]
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+parasail = [
+    "parasail>=1.3.4",
+]
+xlsx = [
+    "openpyxl",
+]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "mypy",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
