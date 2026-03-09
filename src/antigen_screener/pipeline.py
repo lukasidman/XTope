@@ -14,7 +14,7 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Callable
 
-from .db_loader   import load_csv
+from .db_loader   import load_sequences
 from .tag_stripper import strip_tag, set_tag
 from .kmer_filter  import KmerIndex
 from .aligner      import batch_align, AlignmentResult
@@ -74,7 +74,7 @@ def run_pipeline(
 
     # --- Load sequences ---
     print(f"[1/4] Loading sequences from: {input_path}")
-    raw_records = load_csv(input_path, id_col=id_col, seq_col=seq_col, verbose=True)
+    raw_records = load_sequences(input_path, id_col=id_col, seq_col=seq_col, verbose=True)
     total = len(raw_records)
     print(f"  Total antigens: {total:,}\n")
 
