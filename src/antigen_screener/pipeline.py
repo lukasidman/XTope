@@ -16,7 +16,7 @@ from typing import Callable
 
 from .db_loader   import load_sequences
 from .tag_stripper import strip_tag, set_tag
-from .kmer_filter  import KmerIndex
+from .kmer_filter  import TwoPassFilter
 from .aligner      import batch_align, AlignmentResult
 from .store        import ResultsStore
 
@@ -100,7 +100,7 @@ def run_pipeline(
 
     # --- Build k-mer index ---
     print(f"[3/4] Building k-mer index...")
-    index = KmerIndex()
+    index = TwoPassFilter()
     index.add_batch(stripped_records)
     print(f"  Index built ({len(index):,} sequences)\n")
 
