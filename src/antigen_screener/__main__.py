@@ -18,6 +18,7 @@ Examples:
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 
@@ -183,7 +184,13 @@ def main():
     p_s.set_defaults(func=cmd_stats)
 
     args = parser.parse_args()
+    t0 = time.perf_counter()
     args.func(args)
+    elapsed = time.perf_counter() - t0
+    if elapsed >= 1.0:
+        print(f"\nCompleted in {elapsed:.3f}s")
+    else:
+        print(f"\nCompleted in {elapsed * 1000:.1f}ms")
 
 
 if __name__ == "__main__":
