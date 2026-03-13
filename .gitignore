@@ -17,6 +17,7 @@ build/
 
 # Database output
 *.db
+benchmark_homology_key.md
 
 # Mac system files
 .DS_Store
