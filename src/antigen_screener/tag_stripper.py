@@ -1,15 +1,8 @@
 """
 Tag stripping module.
 Detects and removes the His6-ABP tag from the N-terminus of antigen sequences.
-Uses Smith-Waterman local alignment for robust detection (falls back to
-pure Python if parasail is not installed).
+Uses exact string matching first, then Smith-Waterman local alignment as fallback.
 """
-
-try:
-    import parasail as _parasail
-    _HAS_PARASAIL = True
-except ImportError:
-    _HAS_PARASAIL = False
 
 from .sw_fallback import sw_score as _sw_fallback
 
@@ -35,14 +28,7 @@ def strip_tag_sw(sequence: str, tag: str = DEFAULT_TAG):
     window = sequence[:SEARCH_WINDOW].upper()
     tag_upper = tag.upper()
 
-    if _HAS_PARASAIL:
-        r = _parasail.sw_trace_striped_16(
-            tag_upper, window, GAP_OPEN, GAP_EXTEND, _parasail.blosum62
-        )
-        score = r.score
-        end_in_window = r.end_query + 1
-    else:
-        score, end_in_window = _sw_fallback(tag_upper, window, GAP_OPEN, GAP_EXTEND)
+    score, end_in_window = _sw_fallback(tag_upper, window, GAP_OPEN, GAP_EXTEND)
 
     if score < MIN_TAG_SCORE:
         return sequence, False, score

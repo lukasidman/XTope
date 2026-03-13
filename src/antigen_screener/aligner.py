@@ -1,19 +1,10 @@
 """
 Smith-Waterman alignment scoring module.
-Attempts to use parasail (fast, SIMD-accelerated) and falls back to
-the pure Python implementation if parasail is not installed.
-
-Install parasail for ~50x speedup on large databases:
-    pip install parasail
+Uses a pure-Python implementation for per-pair alignment and traceback.
+For bulk scoring, use the batched NumPy/CuPy approach in the pipeline.
 """
 
 from dataclasses import dataclass
-
-try:
-    import parasail as _parasail
-    _HAS_PARASAIL = True
-except ImportError:
-    _HAS_PARASAIL = False
 
 from .sw_fallback import sw_score as _sw_fallback
 
@@ -25,20 +16,8 @@ DEFAULT_MATRIX = "blosum62"
 
 def _align_one(query: str, target: str, matrix_name: str = "blosum62") -> tuple:
     """Returns (score, approx_end_pos)."""
-    if _HAS_PARASAIL:
-        matrices = {
-            "blosum62": _parasail.blosum62,
-            "blosum45": _parasail.blosum45,
-            "blosum80": _parasail.blosum80,
-        }
-        matrix = matrices.get(matrix_name, _parasail.blosum62)
-        r = _parasail.sw_trace_striped_16(
-            query.upper(), target.upper(), GAP_OPEN, GAP_EXTEND, matrix
-        )
-        return r.score, max(r.end_query, r.end_ref) + 1
-    else:
-        score, end_j = _sw_fallback(query.upper(), target.upper(), GAP_OPEN, GAP_EXTEND)
-        return score, end_j
+    score, end_j = _sw_fallback(query.upper(), target.upper(), GAP_OPEN, GAP_EXTEND)
+    return score, end_j
 
 
 @dataclass
