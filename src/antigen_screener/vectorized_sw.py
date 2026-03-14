@@ -148,9 +148,15 @@ def score_one_vs_all(
     if n == 0 or m == 0:
         return np.zeros(n, dtype=np.float32)
 
-    # DP state — only the previous row is kept
+    # DP state — only the previous row is kept.
+    # Pre-allocate all working arrays once to avoid per-iteration allocation.
     H_prev = np.zeros((n, max_len), dtype=np.float32)
+    H_curr = np.zeros((n, max_len), dtype=np.float32)
     F = np.full((n, max_len), -1e6, dtype=np.float32)
+    diag = np.empty((n, max_len), dtype=np.float32)
+    sub = np.empty((n, max_len), dtype=np.float32)
+    E_col = np.empty(n, dtype=np.float32)
+    tmp_col = np.empty(n, dtype=np.float32)  # scratch for E_col loop
     best = np.zeros(n, dtype=np.float32)
 
     go = np.float32(gap_open)
@@ -158,38 +164,43 @@ def score_one_vs_all(
 
     for i in range(m):
         # Substitution scores: BLOSUM62[query[i], target[j]] for all (n, max_len)
-        sub = BLOSUM62[query[i], targets_matrix].astype(np.float32)
+        sub[:] = BLOSUM62[query[i], targets_matrix]
 
         # Diagonal: H[i-1, j-1] — shift H_prev right by 1
-        diag = np.empty_like(H_prev)
         diag[:, 0] = 0.0
         diag[:, 1:] = H_prev[:, :-1]
 
-        # Match/mismatch candidate
-        match = diag + sub
+        # Match/mismatch candidate: diag + sub → H_curr (reuse as scratch)
+        np.add(diag, sub, out=H_curr)
 
         # F[i,j] = max(F[i-1,j] - gap_extend, H[i-1,j] - gap_open)
         # Gap in query (vertical gap) — fully parallel across j
-        F = np.maximum(F - ge, H_prev - go)
+        np.subtract(F, ge, out=F)
+        np.subtract(H_prev, go, out=diag)  # reuse diag as temp
+        np.maximum(F, diag, out=F)
 
         # H_curr = max(0, match, F) — before horizontal gap correction
-        H_curr = np.maximum(np.float32(0.0), np.maximum(match, F))
+        np.maximum(H_curr, F, out=H_curr)
+        np.maximum(H_curr, np.float32(0.0), out=H_curr)
 
         # E[i,j] = max(E[i,j-1] - gap_extend, H[i,j-1] - gap_open)
         # Gap in target (horizontal gap) — left-to-right dependency.
         # Loop over columns; each iteration is vectorized across all N sequences.
-        E_col = np.full(n, -1e6, dtype=np.float32)
+        E_col[:] = -1e6
         for j in range(1, max_len):
-            E_col = np.maximum(E_col - ge, H_curr[:, j - 1] - go)
-            H_curr[:, j] = np.maximum(H_curr[:, j], E_col)
+            np.subtract(E_col, ge, out=E_col)
+            np.subtract(H_curr[:, j - 1], go, out=tmp_col)
+            np.maximum(E_col, tmp_col, out=E_col)
+            np.maximum(H_curr[:, j], E_col, out=H_curr[:, j])
 
         # Zero out padded positions
         H_curr *= targets_mask
 
         # Track running max per sequence
-        best = np.maximum(best, H_curr.max(axis=1))
+        best[:] = np.maximum(best, H_curr.max(axis=1))
 
-        H_prev = H_curr
+        # Swap buffers — H_curr becomes H_prev for next iteration
+        H_prev, H_curr = H_curr, H_prev
 
     return best
 
