@@ -32,7 +32,11 @@ _UNKNOWN = len(_AA_ORDER)  # index 20 — for any non-standard residue
 
 
 def _build_blosum62_array() -> np.ndarray:
-    """Parse the raw BLOSUM62 text into a (21, 21) int8 array.
+    """Parse the raw BLOSUM62 text into a (21, 21) float32 array.
+
+    Stored as float32 so that substitution score lookups via fancy indexing
+    produce float32 arrays directly, avoiding a per-iteration int8→float32
+    cast in the inner loop.
 
     Row/column 20 is the unknown residue, scoring 0 against everything.
     """
@@ -40,7 +44,7 @@ def _build_blosum62_array() -> np.ndarray:
     headers = lines[0].split()
     n = len(headers)  # 20
 
-    mat = np.zeros((n + 1, n + 1), dtype=np.int8)
+    mat = np.zeros((n + 1, n + 1), dtype=np.float32)
     for row_idx, line in enumerate(lines[1:]):
         parts = line.split()
         for col_idx in range(n):
