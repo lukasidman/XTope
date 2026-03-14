@@ -114,11 +114,12 @@ def encode_database(sequences: dict[str, str]) -> EncodedDB:
 
 def score_one_vs_all(
     query: np.ndarray,
-    db: EncodedDB,
+    targets_matrix: np.ndarray,
+    targets_mask: np.ndarray,
     gap_open: int = 10,
     gap_extend: int = 1,
 ) -> np.ndarray:
-    """SW-align one query against all N database sequences simultaneously.
+    """SW-align one query against a set of target sequences simultaneously.
 
     Uses affine gap penalties with full vectorization. The E matrix (gap in
     target / horizontal gap) has a left-to-right dependency within each row
@@ -127,21 +128,21 @@ def score_one_vs_all(
     operation across all N sequences, so the effective Python overhead is
     O(m × max_len) cheap NumPy calls, not O(m × max_len × N).
 
-    For 80k sequences of length ~150, this means ~150 × 150 = 22,500 NumPy
-    operations per query — each operating on 80k elements in C. Total wall
-    time per query is ~0.5-1.0 sec on a modern CPU.
+    The caller controls which sequences are passed in. For upper-triangle
+    computation, only sequences with index > query_index need to be included,
+    so the arrays shrink as the pipeline progresses — nearly halving total work.
 
     Args:
         query: int8 array of encoded query residues (length m).
-        db: EncodedDB containing all target sequences.
+        targets_matrix: (N, max_len) int8 array of encoded target sequences.
+        targets_mask: (N, max_len) bool array — True where real residue.
         gap_open: Gap opening penalty (positive value, applied as negative).
         gap_extend: Gap extension penalty (positive value, applied as negative).
 
     Returns:
-        (N,) float32 array of raw SW scores, one per database sequence.
+        (N,) float32 array of raw SW scores, one per target sequence.
     """
-    n = len(db.ids)
-    max_len = db.max_len
+    n, max_len = targets_matrix.shape
     m = len(query)
 
     if n == 0 or m == 0:
@@ -157,7 +158,7 @@ def score_one_vs_all(
 
     for i in range(m):
         # Substitution scores: BLOSUM62[query[i], target[j]] for all (n, max_len)
-        sub = BLOSUM62[query[i], db.matrix].astype(np.float32)
+        sub = BLOSUM62[query[i], targets_matrix].astype(np.float32)
 
         # Diagonal: H[i-1, j-1] — shift H_prev right by 1
         diag = np.empty_like(H_prev)
@@ -183,7 +184,7 @@ def score_one_vs_all(
             H_curr[:, j] = np.maximum(H_curr[:, j], E_col)
 
         # Zero out padded positions
-        H_curr *= db.mask
+        H_curr *= targets_mask
 
         # Track running max per sequence
         best = np.maximum(best, H_curr.max(axis=1))
@@ -233,36 +234,59 @@ def run_vectorized_pipeline(
     print(f"  Encoding {n:,} sequences...")
     db = encode_database(sequences)
 
-    # Build ID → row index mapping for upper-triangle slicing
-    id_to_idx = {sid: i for i, sid in enumerate(ids)}
+    # Populate the antigens table so export_csv can JOIN on it.
+    # The vectorized pipeline only receives stripped sequences, so we store
+    # the stripped sequence as both 'sequence' and 'stripped' fields.
+    antigen_records = [
+        (sid, seq, seq, True) for sid, seq in sequences.items()
+    ]
+    store.upsert_antigens_batch(antigen_records)
 
     completed = store.get_completed_queries() if resume else set()
     if completed:
         print(f"  Resuming — {len(completed):,} queries already done")
+
+    # Upper-triangle total: sum of (n-1) + (n-2) + ... + 1 = n*(n-1)/2
+    # Each query qi compares against (n - qi - 1) targets.
+    # Track progress by comparisons done, not just queries done, so the
+    # ETA accounts for later queries being cheaper than earlier ones.
+    total_comparisons = n * (n - 1) // 2
+    comparisons_done = 0
 
     total_pairs_found = 0
     batch_buffer: list[dict] = []
     done = 0
 
     for qi, query_id in enumerate(ids):
+        targets_this_query = n - qi - 1
+
         if query_id in completed:
             done += 1
+            comparisons_done += targets_this_query
             continue
 
         query_encoded = db.matrix[qi, :db.lengths[qi]]
 
-        # Score this query against ALL sequences
-        raw_scores = score_one_vs_all(query_encoded, db, gap_open, gap_extend)
+        # Only score against sequences with index > qi (upper triangle).
+        # NumPy slicing creates a view — no data is copied.
+        target_start = qi + 1
+        targets_matrix = db.matrix[target_start:]
+        targets_mask = db.mask[target_start:]
 
-        # Only keep upper triangle (qi < ti) to avoid duplicate pairs
+        raw_scores = score_one_vs_all(
+            query_encoded, targets_matrix, targets_mask, gap_open, gap_extend,
+        )
+
+        # Collect results above threshold
         query_len = int(db.lengths[qi])
-        for ti in range(qi + 1, n):
+        for ri in range(len(raw_scores)):
+            ti = target_start + ri  # original index in db
             target_len = int(db.lengths[ti])
             min_len = min(query_len, target_len)
             if min_len == 0:
                 continue
 
-            raw = float(raw_scores[ti])
+            raw = float(raw_scores[ri])
             norm = raw / min_len
 
             if norm >= min_norm_score:
@@ -278,22 +302,28 @@ def run_vectorized_pipeline(
                 total_pairs_found += 1
 
         done += 1
+        comparisons_done += targets_this_query
 
         # Flush to DB periodically
         if len(batch_buffer) >= batch_size:
             store.insert_similarities_batch(batch_buffer)
             batch_buffer.clear()
 
-        # Progress reporting
+        # Progress reporting — based on comparisons, not query count,
+        # so ETA reflects that later queries are progressively cheaper.
         if done % 10 == 0 or done == n:
             elapsed = time.time() - start_time
-            rate = done / elapsed if elapsed > 0 else 1
-            remaining = (n - done) / rate if rate > 0 else 0
-            eta = _format_eta(remaining)
-            pct = 100 * done / n
+            if comparisons_done > 0:
+                time_per_comp = elapsed / comparisons_done
+                remaining_comps = total_comparisons - comparisons_done
+                remaining_secs = remaining_comps * time_per_comp
+            else:
+                remaining_secs = 0
+            eta = _format_eta(remaining_secs)
+            pct = 100 * comparisons_done / total_comparisons if total_comparisons > 0 else 100
 
             print(
-                f"  {done:>7,}/{n:,}  ({pct:5.1f}%)  "
+                f"  {done:>7,}/{n:,} queries  ({pct:5.1f}%)  "
                 f"pairs found: {total_pairs_found:,}  "
                 f"ETA: {eta}",
                 end="\r",
