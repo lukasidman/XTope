@@ -53,6 +53,20 @@ class ResultsStore:
 
     def _init_schema(self):
         self.conn.executescript(SCHEMA)
+        # Migration: add contiguous match columns if not present (for existing DBs)
+        for col, coltype in [
+            ("consec_match_len", "INTEGER DEFAULT 0"),
+            ("consec_query_start", "INTEGER DEFAULT -1"),
+            ("consec_query_end", "INTEGER DEFAULT -1"),
+            ("consec_target_start", "INTEGER DEFAULT -1"),
+            ("consec_target_end", "INTEGER DEFAULT -1"),
+        ]:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE similarities ADD COLUMN {col} {coltype}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
         self.conn.commit()
 
     # ------------------------------------------------------------------ #
@@ -88,14 +102,32 @@ class ResultsStore:
     # ------------------------------------------------------------------ #
 
     def insert_similarities_batch(self, results: list[dict]):
-        """Bulk insert similarity results. Ignores duplicates."""
+        """Bulk insert similarity results. Ignores duplicates.
+
+        Handles both old-style dicts (without contiguous match fields) and
+        new-style dicts (with consec_match_len etc.) for backwards compat.
+        """
         self.conn.executemany(
             """INSERT OR IGNORE INTO similarities
                (query_id, target_id, raw_score, normalized_score,
-                query_length, target_length, aligned_region_len)
+                query_length, target_length, aligned_region_len,
+                consec_match_len, consec_query_start, consec_query_end,
+                consec_target_start, consec_target_end)
                VALUES (:query_id, :target_id, :raw_score, :normalized_score,
-                       :query_length, :target_length, :aligned_region_len)""",
-            results,
+                       :query_length, :target_length, :aligned_region_len,
+                       :consec_match_len, :consec_query_start, :consec_query_end,
+                       :consec_target_start, :consec_target_end)""",
+            [
+                {
+                    "consec_match_len": r.get("consec_match_len", 0),
+                    "consec_query_start": r.get("consec_query_start", -1),
+                    "consec_query_end": r.get("consec_query_end", -1),
+                    "consec_target_start": r.get("consec_target_start", -1),
+                    "consec_target_end": r.get("consec_target_end", -1),
+                    **r,
+                }
+                for r in results
+            ],
         )
         self.conn.commit()
 
@@ -161,7 +193,11 @@ class ResultsStore:
     # ------------------------------------------------------------------ #
 
     def export_csv(self, output_path: str | Path, min_score: float = 0.0):
-        """Export all similarity results to CSV."""
+        """Export all similarity results to CSV.
+
+        Includes pairs that passed either the SW score threshold or the
+        contiguous match threshold (or both).
+        """
         import csv
         rows = self.conn.execute(
             """SELECT s.*, a1.sequence as query_original, a2.sequence as target_original,
@@ -169,9 +205,7 @@ class ResultsStore:
                FROM similarities s
                JOIN antigens a1 ON s.query_id  = a1.id
                JOIN antigens a2 ON s.target_id = a2.id
-               WHERE s.normalized_score >= ?
                ORDER BY s.normalized_score DESC""",
-            (min_score,),
         ).fetchall()
 
         with open(output_path, "w", newline="") as f:
@@ -179,6 +213,8 @@ class ResultsStore:
             writer.writerow([
                 "query_id", "target_id", "normalized_score", "raw_score",
                 "aligned_region_len", "query_length", "target_length",
+                "consec_match_len", "consec_query_start", "consec_query_end",
+                "consec_target_start", "consec_target_end",
                 "query_stripped", "target_stripped",
             ])
             for r in rows:
@@ -186,6 +222,9 @@ class ResultsStore:
                     r["query_id"], r["target_id"], r["normalized_score"],
                     r["raw_score"], r["aligned_region_len"],
                     r["query_length"], r["target_length"],
+                    r["consec_match_len"], r["consec_query_start"],
+                    r["consec_query_end"], r["consec_target_start"],
+                    r["consec_target_end"],
                     r["query_stripped"], r["target_stripped"],
                 ])
 

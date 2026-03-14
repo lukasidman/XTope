@@ -23,6 +23,13 @@ from pathlib import Path
 
 
 def cmd_run(args):
+    if args.backend == "vectorized":
+        _cmd_run_vectorized(args)
+    else:
+        _cmd_run_kmer(args)
+
+
+def _cmd_run_kmer(args):
     from antigen_screener.pipeline import run_pipeline
 
     run_pipeline(
@@ -37,6 +44,70 @@ def cmd_run(args):
         matrix=args.matrix,
         resume=not args.no_resume,
     )
+
+
+def _cmd_run_vectorized(args):
+    import datetime
+    from antigen_screener.db_loader import load_sequences
+    from antigen_screener.tag_stripper import strip_tag, set_tag
+    from antigen_screener.store import ResultsStore
+    from antigen_screener.vectorized_sw import run_vectorized_pipeline
+
+    print(f"\n{'='*60}")
+    print(f"  Antigen Cross-Reactivity Screener (vectorized NumPy)")
+    print(f"  Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Backend: CPU (NumPy)")
+    print(f"{'='*60}\n")
+
+    if args.tag:
+        set_tag(args.tag)
+        print(f"  Tag set to: {args.tag}\n")
+
+    print(f"[1/3] Loading sequences from: {args.input}")
+    raw_records = load_sequences(args.input, id_col=args.id_col, seq_col=args.seq_col, verbose=True)
+    total = len(raw_records)
+    print(f"  Total antigens: {total:,}\n")
+
+    print(f"[2/3] Stripping His6-ABP tags...")
+    store = ResultsStore(args.db)
+    stripped_seqs: dict[str, str] = {}
+    tag_found_count = 0
+    antigen_batch = []
+
+    for antigen_id, sequence in raw_records:
+        result = strip_tag(sequence)
+        stripped = result["stripped"]
+        found = result["tag_found"]
+        if found:
+            tag_found_count += 1
+        antigen_batch.append((antigen_id, sequence, stripped, found))
+        stripped_seqs[antigen_id] = stripped
+
+    store.upsert_antigens_batch(antigen_batch)
+    print(f"  Tags detected and removed in {tag_found_count:,} / {total:,} sequences\n")
+
+    print(f"[3/3] Running vectorized all-vs-all alignment...")
+    print(f"  Parameters: min_norm_score={args.min_score}")
+    stats = run_vectorized_pipeline(
+        sequences=stripped_seqs,
+        store=store,
+        min_norm_score=args.min_score,
+        resume=not args.no_resume,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"  Run complete!")
+    print(f"  Total time:          {stats['elapsed_seconds']:.1f}s")
+    print(f"  Antigens screened:   {total:,}")
+    print(f"  Similar pairs found: {stats['total_pairs']:,}")
+    print(f"  Results saved to:    {args.db}")
+    print(f"{'='*60}\n")
+
+    store.set_meta("last_run", datetime.datetime.now().isoformat())
+    store.set_meta("total_antigens", str(total))
+    store.set_meta("total_pairs", str(stats["total_pairs"]))
+    store.set_meta("backend", "vectorized_numpy")
+    store.close()
 
 
 def cmd_query(args):
@@ -157,6 +228,8 @@ def main():
     p_run.add_argument("--min-aligned",   type=int,   default=8,    help="Min aligned region length in aa (default: 8)")
     p_run.add_argument("--matrix",        default="blosum62", choices=["blosum62","blosum45","blosum80"], help="Substitution matrix")
     p_run.add_argument("--no-resume",     action="store_true", help="Start fresh even if DB has partial results")
+    p_run.add_argument("--backend",       default="kmer", choices=["kmer", "vectorized"],
+                       help="Alignment backend: 'kmer' (k-mer filter + per-pair SW) or 'vectorized' (NumPy batched SW, no pre-filter)")
     p_run.set_defaults(func=cmd_run)
 
     # ---- query ----
