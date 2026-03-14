@@ -228,17 +228,25 @@ def run_vectorized_pipeline(
         Dict with run statistics.
     """
     start_time = time.time()
-    ids = list(sequences.keys())
+
+    # Sort sequences longest-to-shortest. This enables a key optimisation:
+    # since we process the upper triangle (query_idx < target_idx), all
+    # remaining targets are always shorter or equal to the current query.
+    # We can shrink the array width (max_len) after each query, reducing
+    # both the column loop iterations and array operation sizes.
+    sorted_items = sorted(sequences.items(), key=lambda x: len(x[1]), reverse=True)
+    sorted_seqs = {sid: seq for sid, seq in sorted_items}
+    ids = list(sorted_seqs.keys())
     n = len(ids)
 
-    print(f"  Encoding {n:,} sequences...")
-    db = encode_database(sequences)
+    print(f"  Encoding {n:,} sequences (sorted longest → shortest)...")
+    db = encode_database(sorted_seqs)
 
     # Populate the antigens table so export_csv can JOIN on it.
     # The vectorized pipeline only receives stripped sequences, so we store
     # the stripped sequence as both 'sequence' and 'stripped' fields.
     antigen_records = [
-        (sid, seq, seq, True) for sid, seq in sequences.items()
+        (sid, seq, seq, True) for sid, seq in sorted_seqs.items()
     ]
     store.upsert_antigens_batch(antigen_records)
 
@@ -249,7 +257,7 @@ def run_vectorized_pipeline(
     # Upper-triangle total: sum of (n-1) + (n-2) + ... + 1 = n*(n-1)/2
     # Each query qi compares against (n - qi - 1) targets.
     # Track progress by comparisons done, not just queries done, so the
-    # ETA accounts for later queries being cheaper than earlier ones.
+    # ETA accounts for later queries being progressively cheaper.
     total_comparisons = n * (n - 1) // 2
     comparisons_done = 0
 
@@ -270,8 +278,18 @@ def run_vectorized_pipeline(
         # Only score against sequences with index > qi (upper triangle).
         # NumPy slicing creates a view — no data is copied.
         target_start = qi + 1
-        targets_matrix = db.matrix[target_start:]
-        targets_mask = db.mask[target_start:]
+
+        # Because sequences are sorted longest→shortest, the longest
+        # remaining target is at index target_start. Its length gives
+        # the effective max_len — all columns beyond that are padding
+        # zeros that we can skip entirely.
+        if target_start < n:
+            effective_max_len = int(db.lengths[target_start])
+        else:
+            effective_max_len = 0
+
+        targets_matrix = db.matrix[target_start:, :effective_max_len]
+        targets_mask = db.mask[target_start:, :effective_max_len]
 
         raw_scores = score_one_vs_all(
             query_encoded, targets_matrix, targets_mask, gap_open, gap_extend,
