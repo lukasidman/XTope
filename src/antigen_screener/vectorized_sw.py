@@ -339,9 +339,15 @@ def run_vectorized_pipeline(
 
     elapsed_total = time.time() - start_time
     print()  # newline after \r progress
+    print(
+        f"  Complete: {done:,} queries, {comparisons_done:,} comparisons, "
+        f"{total_pairs_found:,} similar pairs found in {_format_eta(elapsed_total)}"
+    )
 
     return {
         "total_pairs": total_pairs_found,
+        "total_queries": done,
+        "total_comparisons": comparisons_done,
         "elapsed_seconds": elapsed_total,
     }
 
