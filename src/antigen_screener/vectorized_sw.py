@@ -310,29 +310,32 @@ def run_vectorized_pipeline(
             query_encoded, targets_matrix, targets_mask, gap_open, gap_extend,
         )
 
-        # Collect results above threshold
+        # Collect results above threshold using vectorized operations
+        # instead of a Python loop over all targets.
         query_len = int(db.lengths[qi])
-        for ri in range(len(raw_scores)):
-            ti = target_start + ri  # original index in db
-            target_len = int(db.lengths[ti])
-            min_len = min(query_len, target_len)
-            if min_len == 0:
-                continue
+        target_lengths = db.lengths[target_start:]  # (num_targets,) int32
+        min_lengths = np.minimum(query_len, target_lengths)
 
-            raw = float(raw_scores[ri])
-            norm = raw / min_len
+        # Avoid division by zero for any zero-length sequences
+        safe_min = np.maximum(min_lengths, 1)
+        norm_scores = raw_scores / safe_min
 
-            if norm >= min_norm_score:
-                batch_buffer.append({
-                    "query_id": query_id,
-                    "target_id": ids[ti],
-                    "raw_score": int(raw),
-                    "normalized_score": round(norm, 4),
-                    "query_length": query_len,
-                    "target_length": target_len,
-                    "aligned_region_len": min_len,  # approximation — no traceback
-                })
-                total_pairs_found += 1
+        # Boolean mask: score above threshold and target length > 0
+        hit_mask = (norm_scores >= min_norm_score) & (min_lengths > 0)
+        hit_indices = np.nonzero(hit_mask)[0]
+
+        for ri in hit_indices:
+            ti = target_start + int(ri)
+            batch_buffer.append({
+                "query_id": query_id,
+                "target_id": ids[ti],
+                "raw_score": int(raw_scores[ri]),
+                "normalized_score": round(float(norm_scores[ri]), 4),
+                "query_length": query_len,
+                "target_length": int(target_lengths[ri]),
+                "aligned_region_len": int(min_lengths[ri]),
+            })
+        total_pairs_found += len(hit_indices)
 
         done += 1
         comparisons_done += targets_this_query
