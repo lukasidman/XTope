@@ -14,12 +14,18 @@ Memory budget at 80k sequences (max_len=150):
 
 import time
 import datetime
+import math
 from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
 
 from .sw_fallback import _BLOSUM62_RAW
+from .evalue import (
+    get_karlin_altschul_params,
+    compute_bit_score as _compute_bit_score_scalar,
+    format_evalue,
+)
 
 
 # ------------------------------------------------------------------ #
@@ -284,12 +290,73 @@ def score_one_vs_all(
 #  Pipeline entry point                                               #
 # ------------------------------------------------------------------ #
 
+def _vectorized_evalues(
+    raw_scores: np.ndarray,
+    query_len: int,
+    db_size: int,
+    lambda_: float,
+    K: float,
+    H: float,
+) -> np.ndarray:
+    """Compute E-values for an array of raw scores (vectorized).
+
+    Args:
+        raw_scores: (N,) float32 array of raw SW scores.
+        query_len: Length of the query sequence.
+        db_size: Total database size in residues.
+        lambda_: Karlin-Altschul lambda parameter.
+        K: Karlin-Altschul K parameter.
+        H: Relative entropy.
+
+    Returns:
+        (N,) float64 array of E-values.
+    """
+    # Effective lengths (scalar for query, scalar for db)
+    if query_len > 0 and db_size > 0 and H > 0:
+        correction_q = math.log(K * query_len * db_size) / H
+        m_eff = max(int(query_len - correction_q), 1)
+        correction_d = math.log(K * db_size * query_len) / H
+        d_eff = max(int(db_size - correction_d), 1)
+    else:
+        m_eff = max(query_len, 1)
+        d_eff = max(db_size, 1)
+
+    # E = K * m_eff * d_eff * exp(-lambda * S)
+    prefix = K * m_eff * d_eff
+    evalues = prefix * np.exp(-lambda_ * raw_scores.astype(np.float64))
+
+    # Clamp scores <= 0 to worst-case E-value
+    evalues = np.where(raw_scores > 0, evalues, float(m_eff * d_eff))
+    return evalues
+
+
+def _vectorized_bit_scores(
+    raw_scores: np.ndarray,
+    lambda_: float,
+    K: float,
+) -> np.ndarray:
+    """Compute bit-scores for an array of raw scores (vectorized).
+
+    Args:
+        raw_scores: (N,) float32 array of raw SW scores.
+        lambda_: Karlin-Altschul lambda parameter.
+        K: Karlin-Altschul K parameter.
+
+    Returns:
+        (N,) float64 array of bit-scores.
+    """
+    ln2 = math.log(2)
+    lnK = math.log(K)
+    bit_scores = (lambda_ * raw_scores.astype(np.float64) - lnK) / ln2
+    return np.where(raw_scores > 0, bit_scores, 0.0)
+
+
 def run_vectorized_pipeline(
     sequences: dict[str, str],
     store,
     gap_open: int = 10,
     gap_extend: int = 1,
-    min_norm_score: float = 1.0,
+    max_evalue: float = 0.01,
     resume: bool = True,
     progress_cb: Callable | None = None,
     batch_size: int = 500,
@@ -305,7 +372,7 @@ def run_vectorized_pipeline(
         store: ResultsStore instance to write results into.
         gap_open: Gap opening penalty.
         gap_extend: Gap extension penalty.
-        min_norm_score: Minimum normalised score to store a pair.
+        max_evalue: Maximum E-value to store a pair.
         resume: If True, skip already-completed query IDs.
         progress_cb: Optional callback(done, total, eta_str).
         batch_size: Flush results to DB every N results.
@@ -314,6 +381,9 @@ def run_vectorized_pipeline(
         Dict with run statistics.
     """
     start_time = time.time()
+
+    # Get Karlin-Altschul parameters for E-value computation
+    lambda_, K, H = get_karlin_altschul_params(gap_open, gap_extend)
 
     # Sort sequences longest-to-shortest. This enables a key optimisation:
     # since we process the upper triangle (query_idx < target_idx), all
@@ -325,7 +395,12 @@ def run_vectorized_pipeline(
     ids = list(sorted_seqs.keys())
     n = len(ids)
 
-    print(f"  Encoding {n:,} sequences (sorted longest → shortest)...")
+    # Compute total database size in residues for E-value calculation
+    db_size = sum(len(seq) for seq in sequences.values())
+
+    print(f"  Encoding {n:,} sequences (sorted longest -> shortest)...")
+    print(f"  Database size: {db_size:,} total residues")
+    print(f"  E-value threshold: {format_evalue(max_evalue)}")
     db = encode_database(sorted_seqs)
 
     # Populate the antigens table so export_csv can JOIN on it.
@@ -365,7 +440,7 @@ def run_vectorized_pipeline(
         # NumPy slicing creates a view — no data is copied.
         target_start = qi + 1
 
-        # Because sequences are sorted longest→shortest, the longest
+        # Because sequences are sorted longest->shortest, the longest
         # remaining target is at index target_start. Its length gives
         # the effective max_len — all columns beyond that are padding
         # zeros that we can skip entirely.
@@ -381,23 +456,23 @@ def run_vectorized_pipeline(
             query_encoded, targets_matrix, targets_mask, gap_open, gap_extend,
         )
 
-        # Collect results above threshold using vectorized operations
-        # instead of a Python loop over all targets.
+        # Compute E-values and bit-scores (vectorized)
         query_len = int(db.lengths[qi])
         target_lengths = db.lengths[target_start:]  # (num_targets,) int32
         min_lengths = np.minimum(query_len, target_lengths)
 
-        # Avoid division by zero for any zero-length sequences
-        safe_min = np.maximum(min_lengths, 1)
-        norm_scores = result.raw_scores / safe_min
+        evalues = _vectorized_evalues(
+            result.raw_scores, query_len, db_size, lambda_, K, H,
+        )
+        bit_scores = _vectorized_bit_scores(result.raw_scores, lambda_, K)
 
-        # A pair is a hit if it passes the SW score threshold OR has a
+        # A pair is a hit if it passes the E-value threshold OR has a
         # contiguous run of highly similar residues >= min_consec_len.
         # This makes contiguous match detection an independent channel
-        # that can rescue short-epitope pairs missed by SW normalisation.
-        score_hit = norm_scores >= min_norm_score
+        # that can rescue short-epitope pairs missed by SW.
+        evalue_hit = evalues <= max_evalue
         consec_hit = result.max_consec >= MIN_CONSEC_LEN
-        hit_mask = (score_hit | consec_hit) & (min_lengths > 0)
+        hit_mask = (evalue_hit | consec_hit) & (min_lengths > 0)
         hit_indices = np.nonzero(hit_mask)[0]
 
         for ri in hit_indices:
@@ -412,7 +487,8 @@ def run_vectorized_pipeline(
                 "query_id": query_id,
                 "target_id": ids[ti],
                 "raw_score": int(result.raw_scores[ri]),
-                "normalized_score": round(float(norm_scores[ri]), 4),
+                "bit_score": round(float(bit_scores[ri]), 1),
+                "evalue": float(evalues[ri]),
                 "query_length": query_len,
                 "target_length": int(target_lengths[ri]),
                 "aligned_region_len": int(min_lengths[ri]),
@@ -466,6 +542,8 @@ def run_vectorized_pipeline(
         f"  Complete: {done:,} queries, {comparisons_done:,} comparisons, "
         f"{total_pairs_found:,} similar pairs found in {_format_eta(elapsed_total)}"
     )
+
+    store.set_meta("db_size_residues", str(db_size))
 
     return {
         "total_pairs": total_pairs_found,

@@ -13,7 +13,7 @@ Examples:
   python -m antigen_screener run --input antigens.csv --db results.db --tag MHHHHHHGSSG
   python -m antigen_screener query --db results.db --id AG_001
   python -m antigen_screener query --db results.db --seq MKALVPVFAGLLLVAGLAAVHSQSLD
-  python -m antigen_screener export --db results.db --output results.csv --min-score 1.5
+  python -m antigen_screener export --db results.db --output results.csv --max-evalue 0.001
 """
 
 import argparse
@@ -39,7 +39,7 @@ def _cmd_run_kmer(args):
         id_col=args.id_col,
         seq_col=args.seq_col,
         kmer_threshold=args.kmer_threshold,
-        min_norm_score=args.min_score,
+        max_evalue=args.max_evalue,
         min_aligned_len=args.min_aligned,
         matrix=args.matrix,
         resume=not args.no_resume,
@@ -52,6 +52,7 @@ def _cmd_run_vectorized(args):
     from antigen_screener.tag_stripper import strip_tag, set_tag
     from antigen_screener.store import ResultsStore
     from antigen_screener.vectorized_sw import run_vectorized_pipeline
+    from antigen_screener.evalue import format_evalue
 
     print(f"\n{'='*60}")
     print(f"  Antigen Cross-Reactivity Screener (vectorized NumPy)")
@@ -87,11 +88,11 @@ def _cmd_run_vectorized(args):
     print(f"  Tags detected and removed in {tag_found_count:,} / {total:,} sequences\n")
 
     print(f"[3/3] Running vectorized all-vs-all alignment...")
-    print(f"  Parameters: min_norm_score={args.min_score}")
+    print(f"  Parameters: max_evalue={format_evalue(args.max_evalue)}")
     stats = run_vectorized_pipeline(
         sequences=stripped_seqs,
         store=store,
-        min_norm_score=args.min_score,
+        max_evalue=args.max_evalue,
         resume=not args.no_resume,
     )
 
@@ -115,6 +116,7 @@ def cmd_query(args):
     from antigen_screener.tag_stripper import strip_tag, set_tag
     from antigen_screener.kmer_filter  import KmerIndex
     from antigen_screener.aligner      import batch_align
+    from antigen_screener.evalue       import format_evalue, evalue_significance
 
     db_path = Path(args.db)
     if not db_path.exists():
@@ -127,15 +129,22 @@ def cmd_query(args):
     # --- Query by ID (precomputed) ---
     if args.id:
         print(f"\nQuerying precomputed results for: {args.id}")
-        results = store.query_similar(args.id, min_score=args.min_score, top_n=args.top_n)
+        results = store.query_similar(args.id, max_evalue=args.max_evalue, top_n=args.top_n)
         if not results:
-            print("  No similar antigens found above threshold.")
+            print("  No similar antigens found below E-value threshold.")
         else:
-            print(f"\n  {'Rank':<5} {'Partner ID':<25} {'Norm Score':<12} {'Aligned Len':<13} {'Q Len':<7} {'T Len'}")
-            print(f"  {'-'*5} {'-'*25} {'-'*12} {'-'*13} {'-'*7} {'-'*6}")
+            print(f"\n  {'Rank':<5} {'Partner ID':<25} {'E-value':<12} "
+                  f"{'Bit Score':<11} {'Significance':<16} {'Aligned':<9} "
+                  f"{'Q Len':<7} {'T Len'}")
+            print(f"  {'-'*5} {'-'*25} {'-'*12} {'-'*11} {'-'*16} {'-'*9} "
+                  f"{'-'*7} {'-'*6}")
             for i, r in enumerate(results, 1):
-                print(f"  {i:<5} {r['partner_id']:<25} {r['normalized_score']:<12.3f} "
-                      f"{r['aligned_region_len']:<13} {r['query_length']:<7} {r['target_length']}")
+                ev = r['evalue']
+                sig = evalue_significance(ev)
+                print(f"  {i:<5} {r['partner_id']:<25} {format_evalue(ev):<12} "
+                      f"{r['bit_score']:<11.1f} {sig:<16} "
+                      f"{r['aligned_region_len']:<9} {r['query_length']:<7} "
+                      f"{r['target_length']}")
         store.close()
         return
 
@@ -151,26 +160,32 @@ def cmd_query(args):
         # Load all stripped sequences from DB
         print("Loading database sequences...")
         all_seqs = store.get_all_stripped()
-        print(f"Running live alignment against {len(all_seqs):,} sequences...\n")
+        db_size = sum(len(seq) for _, seq in all_seqs)
+        print(f"Running live alignment against {len(all_seqs):,} sequences "
+              f"({db_size:,} residues)...\n")
 
         from antigen_screener.aligner import batch_align
         results = batch_align(
             query_seq=stripped,
             query_id="<query>",
             candidates=all_seqs,
-            min_norm_score=args.min_score,
+            max_evalue=args.max_evalue,
             min_aligned_len=args.min_aligned,
+            db_size=db_size,
         )
 
         results = results[:args.top_n]
         if not results:
-            print("  No similar antigens found above threshold.")
+            print("  No similar antigens found below E-value threshold.")
         else:
-            print(f"  {'Rank':<5} {'Target ID':<25} {'Norm Score':<12} {'Aligned Len':<13} {'T Len'}")
-            print(f"  {'-'*5} {'-'*25} {'-'*12} {'-'*13} {'-'*6}")
+            print(f"  {'Rank':<5} {'Target ID':<25} {'E-value':<12} "
+                  f"{'Bit Score':<11} {'Significance':<16} {'Aligned':<9} {'T Len'}")
+            print(f"  {'-'*5} {'-'*25} {'-'*12} {'-'*11} {'-'*16} {'-'*9} {'-'*6}")
             for i, r in enumerate(results, 1):
-                print(f"  {i:<5} {r.target_id:<25} {r.normalized_score:<12.3f} "
-                      f"{r.aligned_region_len:<13} {r.target_length}")
+                sig = evalue_significance(r.evalue)
+                print(f"  {i:<5} {r.target_id:<25} {format_evalue(r.evalue):<12} "
+                      f"{r.bit_score:<11.1f} {sig:<16} "
+                      f"{r.aligned_region_len:<9} {r.target_length}")
 
         store.close()
         return
@@ -181,6 +196,7 @@ def cmd_query(args):
 
 def cmd_export(args):
     from antigen_screener.store import ResultsStore
+    from antigen_screener.evalue import format_evalue
 
     db_path = Path(args.db)
     if not db_path.exists():
@@ -189,8 +205,9 @@ def cmd_export(args):
 
     store = ResultsStore(args.db)
     output = args.output or str(db_path.with_suffix(".csv"))
-    n = store.export_csv(output, min_score=args.min_score)
+    n = store.export_csv(output, max_evalue=args.max_evalue)
     print(f"Exported {n:,} similarity pairs to: {output}")
+    print(f"  E-value cutoff: {format_evalue(args.max_evalue)}")
     store.close()
 
 
@@ -204,9 +221,61 @@ def cmd_stats(args):
     store = ResultsStore(args.db)
     print(f"\n  Database: {args.db}")
     print(f"  Antigens indexed:  {store.antigen_count():,}")
+    print(f"  Total residues:    {store.total_residues():,}")
     print(f"  Similarity pairs:  {store.similarity_count():,}")
     print(f"  Last run:          {store.get_meta('last_run') or 'unknown'}")
+    db_size = store.get_meta('db_size_residues')
+    if db_size:
+        print(f"  DB size (residues): {int(db_size):,}")
     store.close()
+
+
+def cmd_help_scores(args):
+    """Display E-value and bit-score interpretation guide."""
+    print("""
+  E-value & Bit-score Interpretation Guide
+  =========================================
+
+  E-value (Expected value)
+  ------------------------
+  The E-value is the number of alignments with this score (or better)
+  that you would expect to see by chance in a database of this size.
+  Lower E-values indicate more significant hits.
+
+    E-value         Significance     Interpretation
+    -------         ------------     --------------
+    < 1e-10         Very high        Almost certainly share an epitope
+    1e-10 - 1e-4    Strong           Likely cross-reactive
+    1e-4  - 0.1     Moderate         Worth investigating
+    0.1   - 1.0     Weak             Possibly coincidental
+    > 1.0           Not significant  Probably random
+
+  Bit-score
+  ---------
+  The bit-score normalises the raw SW alignment score into a common
+  scale (bits of information) independent of sequence length, database
+  size, and scoring system. Higher bit-scores indicate stronger matches.
+
+    Bit-score       Interpretation
+    ---------       --------------
+    > 50            Very strong similarity
+    30 - 50         Strong similarity
+    20 - 30         Moderate similarity
+    < 20            Weak or no similarity
+
+  Unlike the old normalised score (raw_score / min_length), both E-value
+  and bit-score account for sequence length and database composition,
+  eliminating the length bias that inflated scores for short sequences.
+
+  The E-value depends on database size: the same raw score produces a
+  larger (worse) E-value in a bigger database, because there are more
+  opportunities for chance matches. Bit-scores are database-independent.
+
+  Karlin-Altschul parameters used:
+    Matrix:     BLOSUM62
+    Gap open:   10  (first gap position)
+    Gap extend:  1  (each additional position)
+""")
 
 
 def main():
@@ -224,7 +293,7 @@ def main():
     p_run.add_argument("--id-col",        default=None,   help="Column name for antigen IDs")
     p_run.add_argument("--seq-col",       default=None,   help="Column name for sequences")
     p_run.add_argument("--kmer-threshold",type=float, default=0.04, help="Jaccard threshold for pre-filter (default: 0.04)")
-    p_run.add_argument("--min-score",     type=float, default=1.0,  help="Min normalised SW score to record (default: 1.0)")
+    p_run.add_argument("--max-evalue",    type=float, default=0.01, help="Max E-value to record a pair (default: 0.01)")
     p_run.add_argument("--min-aligned",   type=int,   default=8,    help="Min aligned region length in aa (default: 8)")
     p_run.add_argument("--matrix",        default="blosum62", choices=["blosum62","blosum45","blosum80"], help="Substitution matrix")
     p_run.add_argument("--no-resume",     action="store_true", help="Start fresh even if DB has partial results")
@@ -239,22 +308,26 @@ def main():
     p_q_excl.add_argument("--id",     help="Antigen ID to look up precomputed results")
     p_q_excl.add_argument("--seq",    help="Raw sequence to run live alignment")
     p_q.add_argument("--tag",         default=None, help="Tag to strip from --seq (if using live mode)")
-    p_q.add_argument("--min-score",   type=float, default=1.0, help="Min normalised score (default: 1.0)")
-    p_q.add_argument("--min-aligned", type=int,   default=8,   help="Min aligned region length (default: 8)")
-    p_q.add_argument("--top-n",       type=int,   default=25,  help="Number of results to show (default: 25)")
+    p_q.add_argument("--max-evalue",  type=float, default=0.01, help="Max E-value threshold (default: 0.01)")
+    p_q.add_argument("--min-aligned", type=int,   default=8,    help="Min aligned region length (default: 8)")
+    p_q.add_argument("--top-n",       type=int,   default=25,   help="Number of results to show (default: 25)")
     p_q.set_defaults(func=cmd_query)
 
     # ---- export ----
     p_e = sub.add_parser("export", help="Export results to CSV")
-    p_e.add_argument("--db",        required=True, help="Path to SQLite database")
-    p_e.add_argument("--output",    default=None,  help="Output CSV path (default: same name as db)")
-    p_e.add_argument("--min-score", type=float, default=0.0, help="Min normalised score to include (default: 0.0)")
+    p_e.add_argument("--db",         required=True, help="Path to SQLite database")
+    p_e.add_argument("--output",     default=None,  help="Output CSV path (default: same name as db)")
+    p_e.add_argument("--max-evalue", type=float, default=10.0, help="Max E-value to include (default: 10.0)")
     p_e.set_defaults(func=cmd_export)
 
     # ---- stats ----
     p_s = sub.add_parser("stats", help="Show database statistics")
     p_s.add_argument("--db", required=True, help="Path to SQLite database")
     p_s.set_defaults(func=cmd_stats)
+
+    # ---- help-scores ----
+    p_hs = sub.add_parser("help-scores", help="Show E-value and bit-score interpretation guide")
+    p_hs.set_defaults(func=cmd_help_scores)
 
     args = parser.parse_args()
     t0 = time.perf_counter()

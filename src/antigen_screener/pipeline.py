@@ -19,6 +19,7 @@ from .tag_stripper import strip_tag, set_tag
 from .kmer_filter  import TwoPassFilter
 from .aligner      import batch_align, AlignmentResult
 from .store        import ResultsStore
+from .evalue       import format_evalue
 
 
 def _format_eta(seconds: float) -> str:
@@ -37,7 +38,7 @@ def run_pipeline(
     id_col:           str | None = None,
     seq_col:          str | None = None,
     kmer_threshold:   float = 0.04,
-    min_norm_score:   float = 1.0,
+    max_evalue:       float = 0.01,
     min_aligned_len:  int   = 8,
     matrix:           str   = "blosum62",
     resume:           bool  = True,
@@ -54,7 +55,7 @@ def run_pipeline(
         id_col:          ID column name (auto-detected if None)
         seq_col:         Sequence column name (auto-detected if None)
         kmer_threshold:  Min Jaccard similarity for pre-filter (lower = more sensitive)
-        min_norm_score:  Min normalised SW score to record a pair
+        max_evalue:      Max E-value to record a pair (lower = stricter)
         min_aligned_len: Min aligned region length (epitope-sized = 8aa)
         matrix:          Substitution matrix: 'blosum62', 'blosum45', 'blosum80'
         resume:          If True, skip queries already in the DB
@@ -98,6 +99,11 @@ def run_pipeline(
     store.upsert_antigens_batch(antigen_batch)
     print(f"  Tags detected and removed in {tag_found_count:,} / {total:,} sequences\n")
 
+    # --- Compute database size for E-value calculation ---
+    db_size = sum(len(seq) for _, seq in stripped_records)
+    print(f"  Database size: {db_size:,} total residues ({total:,} sequences)")
+    print(f"  E-value threshold: {format_evalue(max_evalue)}\n")
+
     # --- Build k-mer index ---
     print(f"[3/4] Building k-mer index...")
     index = TwoPassFilter()
@@ -107,7 +113,7 @@ def run_pipeline(
     # --- All-vs-all SW alignment ---
     print(f"[4/4] Running all-vs-all alignment...")
     print(f"  Parameters: kmer_threshold={kmer_threshold}, "
-          f"min_norm_score={min_norm_score}, min_aligned_len={min_aligned_len}, "
+          f"max_evalue={format_evalue(max_evalue)}, min_aligned_len={min_aligned_len}, "
           f"matrix={matrix}")
 
     completed_queries = store.get_completed_queries() if resume else set()
@@ -135,14 +141,15 @@ def run_pipeline(
                 if cid in index.sequences
             ]
 
-            # SW alignment scoring
+            # SW alignment scoring with E-value filtering
             alignments = batch_align(
                 query_seq=stripped_seq,
                 query_id=antigen_id,
                 candidates=candidate_seqs,
                 matrix_name=matrix,
-                min_norm_score=min_norm_score,
+                max_evalue=max_evalue,
                 min_aligned_len=min_aligned_len,
+                db_size=db_size,
             )
 
             for aln in alignments:
@@ -191,6 +198,7 @@ def run_pipeline(
     store.set_meta("last_run", datetime.datetime.now().isoformat())
     store.set_meta("total_antigens", str(total))
     store.set_meta("total_pairs", str(total_pairs_found))
+    store.set_meta("db_size_residues", str(db_size))
     store.close()
 
     return {
