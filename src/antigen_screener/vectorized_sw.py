@@ -26,6 +26,7 @@ from .evalue import (
     compute_bit_score as _compute_bit_score_scalar,
     format_evalue,
 )
+from .ra_diagonal_filter import RADiagonalFilter
 
 
 # ------------------------------------------------------------------ #
@@ -360,12 +361,19 @@ def run_vectorized_pipeline(
     resume: bool = True,
     progress_cb: Callable | None = None,
     batch_size: int = 500,
+    prefilter: bool = False,
 ) -> dict:
     """Score all pairs using vectorized SW alignment.
 
     Replaces the k-mer filter + per-pair SW pipeline with brute-force
     vectorized alignment. Every pair gets a full SW score — no pre-filter,
     no missed pairs.
+
+    When prefilter=True, uses the reduced-alphabet diagonal filter to
+    skip obviously unrelated pairs. Pairs that share a short but highly
+    similar region (scoring well in BLOSUM62) are force-included even if
+    they don't meet the chain threshold — ensuring short epitope matches
+    aren't lost.
 
     Args:
         sequences: {antigen_id: stripped_sequence} for all antigens.
@@ -376,6 +384,8 @@ def run_vectorized_pipeline(
         resume: If True, skip already-completed query IDs.
         progress_cb: Optional callback(done, total, eta_str).
         batch_size: Flush results to DB every N results.
+        prefilter: If True, use the RA diagonal filter (with BLOSUM62
+            rescue) to skip pairs with no local similarity before SW.
 
     Returns:
         Dict with run statistics.
@@ -403,6 +413,17 @@ def run_vectorized_pipeline(
     print(f"  E-value threshold: {format_evalue(max_evalue)}")
     db = encode_database(sorted_seqs)
 
+    # Build the diagonal pre-filter if requested
+    ra_filter: RADiagonalFilter | None = None
+    if prefilter:
+        print(f"  Building reduced-alphabet diagonal filter (with BLOSUM62 rescue)...")
+        ra_filter = RADiagonalFilter()
+        ra_filter.add_batch(list(sorted_seqs.items()))
+        print(f"  Filter indexed {len(ra_filter):,} sequences")
+
+    # Build a lookup from ID to sorted index for the pre-filter
+    id_to_idx: dict[str, int] = {sid: i for i, sid in enumerate(ids)}
+
     # Populate the antigens table so export_csv can JOIN on it.
     # The vectorized pipeline only receives stripped sequences, so we store
     # the stripped sequence as both 'sequence' and 'stripped' fields.
@@ -423,6 +444,7 @@ def run_vectorized_pipeline(
     comparisons_done = 0
 
     total_pairs_found = 0
+    total_filtered_out = 0
     batch_buffer: list[dict] = []
     done = 0
 
@@ -449,8 +471,38 @@ def run_vectorized_pipeline(
         else:
             effective_max_len = 0
 
-        targets_matrix = db.matrix[target_start:, :effective_max_len]
-        targets_mask = db.mask[target_start:, :effective_max_len]
+        # --- Pre-filter: select which targets to score ---
+        if ra_filter is not None and targets_this_query > 0:
+            # Query the diagonal filter (includes BLOSUM62-rescued pairs)
+            passing_ids = ra_filter.query(
+                sorted_seqs[query_id], exclude_id=query_id,
+            )
+            # Only keep targets in the upper triangle (index > qi)
+            passing_indices = []
+            for pid in passing_ids:
+                idx = id_to_idx.get(pid)
+                if idx is not None and idx > qi:
+                    passing_indices.append(idx - target_start)
+            passing_indices.sort()
+
+            if not passing_indices:
+                # No targets passed the filter — skip SW entirely
+                done += 1
+                comparisons_done += targets_this_query
+                total_filtered_out += targets_this_query
+                continue
+
+            # Build filtered sub-arrays for the passing targets
+            passing_arr = np.array(passing_indices, dtype=np.int64)
+            targets_matrix = db.matrix[target_start:, :effective_max_len][passing_arr]
+            targets_mask = db.mask[target_start:, :effective_max_len][passing_arr]
+            target_lengths_filtered = db.lengths[target_start:][passing_arr]
+            total_filtered_out += targets_this_query - len(passing_indices)
+        else:
+            targets_matrix = db.matrix[target_start:, :effective_max_len]
+            targets_mask = db.mask[target_start:, :effective_max_len]
+            target_lengths_filtered = db.lengths[target_start:]
+            passing_indices = None  # sentinel: no filtering applied
 
         result = score_one_vs_all(
             query_encoded, targets_matrix, targets_mask, gap_open, gap_extend,
@@ -458,8 +510,7 @@ def run_vectorized_pipeline(
 
         # Compute E-values and bit-scores (vectorized)
         query_len = int(db.lengths[qi])
-        target_lengths = db.lengths[target_start:]  # (num_targets,) int32
-        min_lengths = np.minimum(query_len, target_lengths)
+        min_lengths = np.minimum(query_len, target_lengths_filtered)
 
         evalues = _vectorized_evalues(
             result.raw_scores, query_len, db_size, lambda_, K, H,
@@ -476,7 +527,12 @@ def run_vectorized_pipeline(
         hit_indices = np.nonzero(hit_mask)[0]
 
         for ri in hit_indices:
-            ti = target_start + int(ri)
+            # Map back to global index
+            if passing_indices is not None:
+                ti = target_start + passing_indices[int(ri)]
+            else:
+                ti = target_start + int(ri)
+
             consec_len = int(result.max_consec[ri])
             end_qi = int(result.consec_end_qi[ri])
             end_tj = int(result.consec_end_tj[ri])
@@ -490,7 +546,7 @@ def run_vectorized_pipeline(
                 "bit_score": round(float(bit_scores[ri]), 1),
                 "evalue": float(evalues[ri]),
                 "query_length": query_len,
-                "target_length": int(target_lengths[ri]),
+                "target_length": int(target_lengths_filtered[ri]),
                 "aligned_region_len": int(min_lengths[ri]),
                 "consec_match_len": consec_len,
                 "consec_query_start": start_qi if consec_len >= MIN_CONSEC_LEN else -1,
@@ -521,9 +577,15 @@ def run_vectorized_pipeline(
             eta = _format_eta(remaining_secs)
             pct = 100 * comparisons_done / total_comparisons if total_comparisons > 0 else 100
 
+            filter_pct = ""
+            if ra_filter is not None and comparisons_done > 0:
+                filter_pct = (
+                    f"  filtered: {100*total_filtered_out/comparisons_done:.0f}%"
+                )
+
             print(
                 f"  {done:>7,}/{n:,} queries  ({pct:5.1f}%)  "
-                f"pairs found: {total_pairs_found:,}  "
+                f"pairs found: {total_pairs_found:,}{filter_pct}  "
                 f"ETA: {eta}",
                 end="\r",
                 flush=True,
@@ -538,9 +600,13 @@ def run_vectorized_pipeline(
 
     elapsed_total = time.time() - start_time
     print()  # newline after \r progress
+    filter_summary = ""
+    if ra_filter is not None:
+        filter_summary = f", {total_filtered_out:,} pairs filtered out"
     print(
         f"  Complete: {done:,} queries, {comparisons_done:,} comparisons, "
-        f"{total_pairs_found:,} similar pairs found in {_format_eta(elapsed_total)}"
+        f"{total_pairs_found:,} similar pairs found{filter_summary} "
+        f"in {_format_eta(elapsed_total)}"
     )
 
     store.set_meta("db_size_residues", str(db_size))
@@ -549,6 +615,7 @@ def run_vectorized_pipeline(
         "total_pairs": total_pairs_found,
         "total_queries": done,
         "total_comparisons": comparisons_done,
+        "total_filtered_out": total_filtered_out,
         "elapsed_seconds": elapsed_total,
     }
 

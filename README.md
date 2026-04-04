@@ -105,17 +105,33 @@ MHHHHHHGSSGPVALKEQRTMWDNF...
 
 ### 3. Run the precomputation
 
-**Default backend (k-mer pre-filter + per-pair SW):**
+**Default (vectorized NumPy + RA diagonal pre-filter):**
 
 ```bash
 python -m antigen_screener run --input antigens.csv --db results.db
 ```
 
-**Vectorized backend (NumPy batched all-vs-all, no pre-filter — more sensitive, slower on large datasets):**
+This runs batched NumPy Smith-Waterman alignment with a reduced-alphabet diagonal pre-filter.
+The pre-filter requires contiguous local similarity before a pair reaches SW — this is biologically
+appropriate for epitope-level cross-reactivity (antibodies bind contiguous regions, not gapped matches).
+
+**Exhaustive mode — no pre-filter, every pair scored:**
 
 ```bash
-python -m antigen_screener run --input antigens.csv --db results.db --backend vectorized
+python -m antigen_screener run --input antigens.csv --db results.db --no-prefilter
 ```
+
+Scores all pairs including those with only gapped or scattered similarity. Slower on large datasets;
+useful when you want to be certain nothing is missed.
+
+**Quick screen — k-mer filter + per-pair SW:**
+
+```bash
+python -m antigen_screener run --input antigens.csv --db results.db --backend kmer
+```
+
+Fastest option for very large datasets. Uses a two-pass k-mer index (Jaccard + chain detection)
+to eliminate most pairs before alignment. May miss some matches the vectorized backend finds.
 
 With custom column names:
 ```bash
@@ -196,7 +212,8 @@ python -m antigen_screener help-scores
 | `--min-aligned` | `8` | Minimum aligned region length in amino acids |
 | `--matrix` | `blosum62` | Substitution matrix (`blosum62`, `blosum45`, `blosum80`) |
 | `--no-resume` | off | Start fresh even if the database has partial results |
-| `--backend` | `kmer` | `kmer` (k-mer filter + per-pair SW) or `vectorized` (NumPy batched all-vs-all) |
+| `--backend` | `vectorized` | `vectorized` (default, NumPy batched SW) or `kmer` (fast k-mer filter + per-pair SW) |
+| `--no-prefilter` | off | Disable the RA diagonal pre-filter; score every pair exhaustively (vectorized only) |
 
 ### `query` flags
 
@@ -251,9 +268,9 @@ Run `python -m antigen_screener help-scores` for the full guide including Karlin
 
 The tool offers two alignment backends, selectable via `--backend`:
 
-**`kmer`** (default) — Builds a k-mer inverted index (k=6) and uses Jaccard similarity as a pre-filter to eliminate >99% of sequence pairs before running Smith-Waterman alignment on the remaining candidates. Fast on large datasets but may miss pairs sharing only short epitopes (below the Jaccard threshold).
+**`vectorized`** (default) — Runs batched Smith-Waterman alignment using NumPy array operations. By default uses a reduced-alphabet diagonal pre-filter to skip pairs with no contiguous local similarity before they reach SW — biologically appropriate for antibody cross-reactivity, where epitopes are contiguous regions. Use `--no-prefilter` to disable the pre-filter and score every pair exhaustively.
 
-**`vectorized`** — Runs batched Smith-Waterman alignment on all pairs simultaneously using NumPy array operations. No pre-filter, so every pair is scored — more sensitive, but slower on very large datasets. Recommended for smaller databases or when sensitivity matters more than speed.
+**`kmer`** — Builds a k-mer inverted index (k=6) and uses a two-pass filter (Jaccard similarity + diagonal chain detection) to eliminate most pairs before running per-pair Smith-Waterman. Fastest option for very large datasets. Use `--backend kmer` for a quick screen when full sensitivity is less important than speed.
 
 ---
 

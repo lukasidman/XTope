@@ -23,14 +23,21 @@ from pathlib import Path
 
 
 def cmd_run(args):
-    if args.backend == "vectorized":
-        _cmd_run_vectorized(args)
-    else:
+    if args.backend == "kmer":
         _cmd_run_kmer(args)
+    else:
+        _cmd_run_vectorized(args)
 
 
 def _cmd_run_kmer(args):
+    import datetime
     from antigen_screener.pipeline import run_pipeline
+
+    print(f"\n{'='*60}")
+    print(f"  Antigen Cross-Reactivity Screener")
+    print(f"  Started:    {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Backend:    kmer (quick screen)")
+    print(f"{'='*60}\n")
 
     run_pipeline(
         input_path=args.input,
@@ -54,10 +61,12 @@ def _cmd_run_vectorized(args):
     from antigen_screener.vectorized_sw import run_vectorized_pipeline
     from antigen_screener.evalue import format_evalue
 
+    prefilter_label = "off (exhaustive)" if args.no_prefilter else "RA diagonal + BLOSUM62 rescue"
     print(f"\n{'='*60}")
-    print(f"  Antigen Cross-Reactivity Screener (vectorized NumPy)")
-    print(f"  Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Backend: CPU (NumPy)")
+    print(f"  Antigen Cross-Reactivity Screener")
+    print(f"  Started:    {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Backend:    vectorized NumPy")
+    print(f"  Pre-filter: {prefilter_label}")
     print(f"{'='*60}\n")
 
     if args.tag:
@@ -87,13 +96,16 @@ def _cmd_run_vectorized(args):
     store.upsert_antigens_batch(antigen_batch)
     print(f"  Tags detected and removed in {tag_found_count:,} / {total:,} sequences\n")
 
+    prefilter = not args.no_prefilter
     print(f"[3/3] Running vectorized all-vs-all alignment...")
-    print(f"  Parameters: max_evalue={format_evalue(args.max_evalue)}")
+    print(f"  Parameters: max_evalue={format_evalue(args.max_evalue)}, "
+          f"prefilter={'RA diagonal + BLOSUM62 rescue' if prefilter else 'off (exhaustive)'}")
     stats = run_vectorized_pipeline(
         sequences=stripped_seqs,
         store=store,
         max_evalue=args.max_evalue,
         resume=not args.no_resume,
+        prefilter=prefilter,
     )
 
     print(f"\n{'='*60}")
@@ -297,8 +309,12 @@ def main():
     p_run.add_argument("--min-aligned",   type=int,   default=8,    help="Min aligned region length in aa (default: 8)")
     p_run.add_argument("--matrix",        default="blosum62", choices=["blosum62","blosum45","blosum80"], help="Substitution matrix")
     p_run.add_argument("--no-resume",     action="store_true", help="Start fresh even if DB has partial results")
-    p_run.add_argument("--backend",       default="kmer", choices=["kmer", "vectorized"],
-                       help="Alignment backend: 'kmer' (k-mer filter + per-pair SW) or 'vectorized' (NumPy batched SW, no pre-filter)")
+    p_run.add_argument("--backend",       default="vectorized", choices=["vectorized", "kmer"],
+                       help="'vectorized' (default): NumPy batched SW, sensitive, catches contiguous epitopes. "
+                            "'kmer': fast k-mer pre-filter + per-pair SW, good for quick screens on large datasets.")
+    p_run.add_argument("--no-prefilter",  action="store_true",
+                       help="(vectorized only) Disable the RA diagonal pre-filter and score every pair exhaustively. "
+                            "More sensitive to gapped alignments; slower on large datasets.")
     p_run.set_defaults(func=cmd_run)
 
     # ---- query ----
