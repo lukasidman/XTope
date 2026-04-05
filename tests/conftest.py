@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def sample_sequence() -> str:
-    """A short antigen sequence with the His6-ABP tag for testing."""
+    """A short antigen sequence with the N-terminal purification tag for testing."""
     return "MHHHHHHGSSGVKQTLNFDLLKLAGDVESNPGPAGSK"
 
 

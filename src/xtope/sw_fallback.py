@@ -2,7 +2,7 @@
 Pure Python Smith-Waterman local alignment.
 Used as a fallback when parasail is not installed.
 Slower than parasail (~50x) but functionally identical.
-For 80k antigens, strongly recommend installing parasail.
+For large databases (100,000+ antigens), strongly recommend installing parasail.
 """
 
 import numpy as np

@@ -187,8 +187,8 @@ def compute_evalue(
 def evalue_significance(evalue: float) -> str:
     """Classify an E-value into a human-readable significance tier.
 
-    Based on BLAST conventions, calibrated for a database of ~80k short
-    peptide sequences (50-150 aa, total ~8M residues).
+    Based on BLAST conventions, calibrated for large databases of short
+    peptide sequences (50-150 aa).
 
     Args:
         evalue: The E-value to classify.

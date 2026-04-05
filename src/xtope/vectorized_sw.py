@@ -5,10 +5,10 @@ Aligns one query against all database sequences simultaneously using
 element-wise array operations, replacing the sequential k-mer filter +
 per-pair SW pipeline.
 
-Memory budget at 80k sequences (max_len=150):
-    db_matrix:  12 MB   (80000, 150) int8
-    db_mask:    12 MB   (80000, 150) bool
-    DP state:  144 MB   3 × (80000, 150) float32
+Memory budget at 100k sequences (max_len=150):
+    db_matrix:  15 MB   (100000, 150) int8
+    db_mask:    15 MB   (100000, 150) bool
+    DP state:  180 MB   3 × (100000, 150) float32
     Total:    ~170 MB
 """
 

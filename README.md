@@ -168,7 +168,7 @@ python -m xtope run \
   --seq-col aa_sequence
 ```
 
-This will run for hours/days on 80,000 sequences — that's expected and fine.
+This will run for hours/days on large databases (100,000+ sequences) — that's expected and fine.
 **It is resumable**: if interrupted, re-run the same command and it picks up
 where it left off. Use `--no-resume` to start fresh.
 
