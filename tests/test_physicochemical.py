@@ -11,7 +11,7 @@ Covers:
 import math
 import pytest
 
-from antigen_screener.physicochemical import (
+from xtope.physicochemical import (
     KD_SCALE,
     CHARGE_SCALE,
     HYDROPHOBIC_SET,

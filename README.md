@@ -1,4 +1,4 @@
-# Antigen Cross-Reactivity Screener
+# XTope
 
 Find antigens in your database that share enough sequence similarity with
 any other antigen to potentially be recognised by the same antibody.
@@ -66,7 +66,7 @@ pip install -e ".[dev]"
 Pass the tag via the `--tag` CLI flag. The default is `MHHHHHHGSSG`.
 
 ```bash
-python -m antigen_screener run --input antigens.csv --db results.db --tag MHHHHHHGSSG
+python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
 ```
 
 ### 2. Prepare your input file
@@ -108,7 +108,7 @@ MHHHHHHGSSGPVALKEQRTMWDNF...
 **Default (vectorized NumPy + RA diagonal pre-filter):**
 
 ```bash
-python -m antigen_screener run --input antigens.csv --db results.db
+python -m xtope run --input antigens.csv --db results.db
 ```
 
 This runs batched NumPy Smith-Waterman alignment with a reduced-alphabet diagonal pre-filter.
@@ -118,7 +118,7 @@ appropriate for epitope-level cross-reactivity (antibodies bind contiguous regio
 **Exhaustive mode — no pre-filter, every pair scored:**
 
 ```bash
-python -m antigen_screener run --input antigens.csv --db results.db --no-prefilter
+python -m xtope run --input antigens.csv --db results.db --no-prefilter
 ```
 
 Scores all pairs including those with only gapped or scattered similarity. Slower on large datasets;
@@ -127,7 +127,7 @@ useful when you want to be certain nothing is missed.
 **Quick screen — k-mer filter + per-pair SW:**
 
 ```bash
-python -m antigen_screener run --input antigens.csv --db results.db --backend kmer
+python -m xtope run --input antigens.csv --db results.db --backend kmer
 ```
 
 Fastest option for very large datasets. Uses a two-pass k-mer index (Jaccard + chain detection)
@@ -135,7 +135,7 @@ to eliminate most pairs before alignment. May miss some matches the vectorized b
 
 With custom column names:
 ```bash
-python -m antigen_screener run \
+python -m xtope run \
   --input antigens.tsv \
   --db results.db \
   --id-col gene_name \
@@ -150,40 +150,40 @@ where it left off. Use `--no-resume` to start fresh.
 
 Look up precomputed similar antigens for a known ID:
 ```bash
-python -m antigen_screener query --db results.db --id AG_001
+python -m xtope query --db results.db --id AG_001
 ```
 
 Run a live alignment for a new sequence not in the database:
 ```bash
-python -m antigen_screener query --db results.db --seq MHHHHHHGSSGAKLTPVQIYWDG
+python -m xtope query --db results.db --seq MHHHHHHGSSGAKLTPVQIYWDG
 ```
 
 Control the number of results and E-value cutoff:
 ```bash
-python -m antigen_screener query --db results.db --id AG_001 --top-n 50 --max-evalue 0.001
+python -m xtope query --db results.db --id AG_001 --top-n 50 --max-evalue 0.001
 ```
 
 ### 5. Export to CSV
 
 ```bash
-python -m antigen_screener export --db results.db --output results.csv
+python -m xtope export --db results.db --output results.csv
 ```
 
 Filter to only high-confidence pairs:
 ```bash
-python -m antigen_screener export --db results.db --output results.csv --max-evalue 0.001
+python -m xtope export --db results.db --output results.csv --max-evalue 0.001
 ```
 
 ### 6. Check database stats
 
 ```bash
-python -m antigen_screener stats --db results.db
+python -m xtope stats --db results.db
 ```
 
 ### 7. Score interpretation guide
 
 ```bash
-python -m antigen_screener help-scores
+python -m xtope help-scores
 ```
 
 ---
@@ -260,7 +260,7 @@ This tool uses **E-values** and **bit-scores** based on the Karlin-Altschul stat
 | 20 – 30 | Moderate similarity |
 | < 20 | Weak or no similarity |
 
-Run `python -m antigen_screener help-scores` for the full guide including Karlin-Altschul parameters.
+Run `python -m xtope help-scores` for the full guide including Karlin-Altschul parameters.
 
 ---
 
@@ -284,10 +284,10 @@ pip install -e ".[dev]"
 pytest tests/ -v
 
 # Run with coverage
-pytest tests/ --cov=antigen_screener --cov-report=term-missing
+pytest tests/ --cov=xtope --cov-report=term-missing
 
 # Type check
-mypy src/antigen_screener/
+mypy src/xtope/
 
 # Lint
 ruff check src/ tests/
@@ -295,9 +295,9 @@ ruff check src/ tests/
 
 Generate synthetic test data and run a quick pipeline test:
 ```bash
-python -m antigen_screener run --input antigens.csv --db test.db --tag MHHHHHHGSSG
-python -m antigen_screener query --db test.db --id AG1
-python -m antigen_screener stats --db test.db
+python -m xtope run --input antigens.csv --db test.db --tag MHHHHHHGSSG
+python -m xtope query --db test.db --id AG1
+python -m xtope stats --db test.db
 ```
 
 ---
@@ -322,7 +322,7 @@ python -m antigen_screener stats --db test.db
 ## Project structure
 
 ```
-antigen-screener/
+xtope/
 ├── README.md
 ├── CLAUDE.md                        # Development instructions
 ├── pyproject.toml                   # Package config (setuptools, Python ≥3.10)
@@ -330,7 +330,7 @@ antigen-screener/
 ├── requirements-optional.txt        # Optional: openpyxl (Excel export)
 ├── requirements-dev.txt             # Dev: pytest, pytest-cov, mypy, ruff
 ├── src/
-│   └── antigen_screener/
+│   └── xtope/
 │       ├── __init__.py              # Package version
 │       ├── __main__.py              # CLI: run, query, export, stats, help-scores
 │       ├── pipeline.py              # All-vs-all orchestrator with resume/checkpoint

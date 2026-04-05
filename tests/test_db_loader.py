@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from antigen_screener.db_loader import (
+from xtope.db_loader import (
     load_csv,
     load_fasta,
     load_sequences,

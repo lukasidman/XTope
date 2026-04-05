@@ -1,4 +1,4 @@
-"""Shared fixtures for antigen_screener tests."""
+"""Shared fixtures for xtope tests."""
 
 from __future__ import annotations
 

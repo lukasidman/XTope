@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-antigen-screener CLI
+xtope CLI
 ====================
 
 Commands:
@@ -9,11 +9,11 @@ Commands:
   export   - Export results to CSV
 
 Examples:
-  python -m antigen_screener run --input antigens.csv --db results.db
-  python -m antigen_screener run --input antigens.csv --db results.db --tag MHHHHHHGSSG
-  python -m antigen_screener query --db results.db --id AG_001
-  python -m antigen_screener query --db results.db --seq MKALVPVFAGLLLVAGLAAVHSQSLD
-  python -m antigen_screener export --db results.db --output results.csv --max-evalue 0.001
+  python -m xtope run --input antigens.csv --db results.db
+  python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
+  python -m xtope query --db results.db --id AG_001
+  python -m xtope query --db results.db --seq MKALVPVFAGLLLVAGLAAVHSQSLD
+  python -m xtope export --db results.db --output results.csv --max-evalue 0.001
 """
 
 import argparse
@@ -31,10 +31,10 @@ def cmd_run(args):
 
 def _cmd_run_kmer(args):
     import datetime
-    from antigen_screener.pipeline import run_pipeline
+    from xtope.pipeline import run_pipeline
 
     print(f"\n{'='*60}")
-    print(f"  Antigen Cross-Reactivity Screener")
+    print(f"  XTope")
     print(f"  Started:    {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Backend:    kmer (quick screen)")
     print(f"{'='*60}\n")
@@ -55,15 +55,15 @@ def _cmd_run_kmer(args):
 
 def _cmd_run_vectorized(args):
     import datetime
-    from antigen_screener.db_loader import load_sequences
-    from antigen_screener.tag_stripper import strip_tag, set_tag
-    from antigen_screener.store import ResultsStore
-    from antigen_screener.vectorized_sw import run_vectorized_pipeline
-    from antigen_screener.evalue import format_evalue
+    from xtope.db_loader import load_sequences
+    from xtope.tag_stripper import strip_tag, set_tag
+    from xtope.store import ResultsStore
+    from xtope.vectorized_sw import run_vectorized_pipeline
+    from xtope.evalue import format_evalue
 
     prefilter_label = "off (exhaustive)" if args.no_prefilter else "RA diagonal + BLOSUM62 rescue"
     print(f"\n{'='*60}")
-    print(f"  Antigen Cross-Reactivity Screener")
+    print(f"  XTope")
     print(f"  Started:    {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"  Backend:    vectorized NumPy")
     print(f"  Pre-filter: {prefilter_label}")
@@ -124,16 +124,16 @@ def _cmd_run_vectorized(args):
 
 
 def cmd_query(args):
-    from antigen_screener.store       import ResultsStore
-    from antigen_screener.tag_stripper import strip_tag, set_tag
-    from antigen_screener.kmer_filter  import KmerIndex
-    from antigen_screener.aligner      import batch_align
-    from antigen_screener.evalue       import format_evalue, evalue_significance
+    from xtope.store       import ResultsStore
+    from xtope.tag_stripper import strip_tag, set_tag
+    from xtope.kmer_filter  import KmerIndex
+    from xtope.aligner      import batch_align
+    from xtope.evalue       import format_evalue, evalue_significance
 
     db_path = Path(args.db)
     if not db_path.exists():
         print(f"Error: Database not found at {args.db}")
-        print("Run `python -m antigen_screener run` first.")
+        print("Run `python -m xtope run` first.")
         sys.exit(1)
 
     store = ResultsStore(args.db)
@@ -190,7 +190,7 @@ def cmd_query(args):
         print(f"Running live alignment against {len(all_seqs):,} sequences "
               f"({db_size:,} residues)...\n")
 
-        from antigen_screener.aligner import batch_align
+        from xtope.aligner import batch_align
         results = batch_align(
             query_seq=stripped,
             query_id="<query>",
@@ -221,8 +221,8 @@ def cmd_query(args):
 
 
 def cmd_export(args):
-    from antigen_screener.store import ResultsStore
-    from antigen_screener.evalue import format_evalue
+    from xtope.store import ResultsStore
+    from xtope.evalue import format_evalue
 
     db_path = Path(args.db)
     if not db_path.exists():
@@ -238,7 +238,7 @@ def cmd_export(args):
 
 
 def cmd_stats(args):
-    from antigen_screener.store import ResultsStore
+    from xtope.store import ResultsStore
     db_path = Path(args.db)
     if not db_path.exists():
         print(f"Error: Database not found at {args.db}")
@@ -306,7 +306,7 @@ def cmd_help_scores(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="antigen-screener",
+        prog="xtope",
         description="Antibody cross-reactivity screener via antigen sequence similarity",
     )
     sub = parser.add_subparsers(dest="command", required=True)

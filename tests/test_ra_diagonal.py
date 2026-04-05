@@ -19,13 +19,13 @@ from collections import defaultdict
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from antigen_screener.ra_diagonal_filter import (
+from xtope.ra_diagonal_filter import (
     RADiagonalFilter,
     reduce_sequence,
     N_GROUPS,
 )
-from antigen_screener.tag_stripper import strip_tag
-from antigen_screener.kmer_filter import TwoPassFilter
+from xtope.tag_stripper import strip_tag
+from xtope.kmer_filter import TwoPassFilter
 
 
 # ---------------------------------------------------------------------------

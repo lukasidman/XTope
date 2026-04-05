@@ -65,7 +65,7 @@ def run_pipeline(
     """
     start_time = time.time()
     print(f"\n{'='*60}")
-    print(f"  Antigen Cross-Reactivity Screener")
+    print(f"  XTope")
     print(f"  Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from antigen_screener.kmer_filter import (
+from xtope.kmer_filter import (
     KmerIndex,
     ChainKmerIndex,
     TwoPassFilter,
