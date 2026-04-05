@@ -24,7 +24,7 @@ existing database that might act as suitable capture column substitutes.
 1. Prepare your antigen database (CSV / TSV / FASTA)
        │
        ▼
-2. Strip His6-ABP N-terminal tag (exact match + Smith-Waterman fallback)
+2. (Optional) Strip N-terminal purification tag — opt-in via --tag
        │
        ▼
 3. Run all-vs-all alignment
@@ -86,32 +86,42 @@ If your column names differ, use `--id-col` and `--seq-col` flags.
 Example CSV:
 ```
 antigen_id,sequence
-AG_001,MHHHHHHGSSGARKLVTPQIYWDG...
-AG_002,MHHHHHHGSSGPVALKEQRTMWDNF...
+AG_001,ARKLVTPQIYWDG...
+AG_002,PVALKEQRTMWDNF...
 ```
 
 Example semicolon-delimited (auto-detected):
 ```
 ;name;sequence
-AG_001;MHHHHHHGSSGARKLVTPQIYWDG...
-AG_002;MHHHHHHGSSGPVALKEQRTMWDNF...
+AG_001;ARKLVTPQIYWDG...
+AG_002;PVALKEQRTMWDNF...
 ```
 
 Example FASTA:
 ```
 >AG_001
-MHHHHHHGSSGARKLVTPQIYWDG...
+ARKLVTPQIYWDG...
 >AG_002
-MHHHHHHGSSGPVALKEQRTMWDNF...
+PVALKEQRTMWDNF...
 ```
 
-### 2. Set your His6-ABP tag
+### 2. N-terminal tag stripping (optional)
 
-Pass the tag via the `--tag` CLI flag. The default is `MHHHHHHGSSG`.
+N-tag stripping is **disabled by default** — sequences are used exactly as provided.
+
+If your sequences carry an N-terminal purification tag that you want removed before
+alignment, pass it via `--tag`:
 
 ```bash
 python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
 ```
+
+The tool will try exact string matching first, then fall back to Smith-Waterman
+alignment within the first 60 residues if the exact match fails. At startup it
+reports how many sequences the tag was found in.
+
+If you don't pass `--tag`, the tool logs `N-tag stripping: disabled` and proceeds
+with full sequences — appropriate when sequences are already tag-free.
 
 ### 3. Run the precomputation
 
@@ -124,6 +134,12 @@ python -m xtope run --input antigens.csv --db results.db
 This runs batched NumPy Smith-Waterman alignment with a reduced-alphabet diagonal pre-filter.
 The pre-filter requires contiguous local similarity before a pair reaches SW — this is biologically
 appropriate for epitope-level cross-reactivity (antibodies bind contiguous regions, not gapped matches).
+
+**With N-tag stripping:**
+
+```bash
+python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
+```
 
 **Exhaustive mode — no pre-filter, every pair scored:**
 
@@ -158,7 +174,6 @@ where it left off. Use `--no-resume` to start fresh.
 
 ### 4. Query results
 
-
 Look up precomputed similar antigens for a known ID:
 ```bash
 python -m xtope query --db results.db --id AG_001
@@ -166,7 +181,12 @@ python -m xtope query --db results.db --id AG_001
 
 Run a live alignment for a new sequence not in the database:
 ```bash
-python -m xtope query --db results.db --seq MHHHHHHGSSGAKLTPVQIYWDG
+python -m xtope query --db results.db --seq AKLTPVQIYWDG
+```
+
+Strip an N-tag from the query sequence in live mode:
+```bash
+python -m xtope query --db results.db --seq MHHHHHHGSSGAKLTPVQIYWDG --tag MHHHHHHGSSG
 ```
 
 Control the number of results and E-value cutoff:
@@ -215,7 +235,7 @@ python -m xtope help-scores
 |------|---------|-------------|
 | `--input` | *(required)* | Path to CSV, TSV, or FASTA antigen database |
 | `--db` | *(required)* | Path to output SQLite database |
-| `--tag` | `MHHHHHHGSSG` | His6-ABP tag sequence to strip |
+| `--tag` | *(disabled)* | N-terminal tag sequence to strip before alignment (opt-in) |
 | `--id-col` | *(auto-detect)* | Column name for antigen IDs |
 | `--seq-col` | *(auto-detect)* | Column name for sequences |
 | `--kmer-threshold` | `0.04` | Jaccard threshold for k-mer pre-filter (kmer backend only) |
@@ -233,7 +253,7 @@ python -m xtope help-scores
 | `--db` | *(required)* | Path to SQLite database |
 | `--id` | — | Antigen ID to look up precomputed results |
 | `--seq` | — | Raw sequence to run live alignment (mutually exclusive with `--id`) |
-| `--tag` | `MHHHHHHGSSG` | Tag to strip from `--seq` in live mode |
+| `--tag` | *(disabled)* | N-terminal tag to strip from `--seq` in live mode (opt-in) |
 | `--max-evalue` | `0.01` | Maximum E-value threshold |
 | `--min-aligned` | `8` | Minimum aligned region length |
 | `--top-n` | `25` | Number of results to show |
@@ -285,6 +305,20 @@ The tool offers two alignment backends, selectable via `--backend`:
 
 ---
 
+## Test data
+
+A set of 2,500 synthetic test sequences is included at `data/test_antigens_2500.csv`. These contain no N-terminal tag and are ready to use directly:
+
+```bash
+python -m xtope run --input data/test_antigens_2500.csv --db test.db
+python -m xtope query --db test.db --id FAM00_VAR00
+python -m xtope stats --db test.db
+```
+
+The dataset includes 10 similarity families (15 variants each), 5 short shared-epitope groups, a physicochemically convergent family, mosaic domain-shuffled sequences, and ~2,300 random background sequences across 50–150 aa.
+
+---
+
 ## Testing
 
 ```bash
@@ -304,13 +338,6 @@ mypy src/xtope/
 ruff check src/ tests/
 ```
 
-Generate synthetic test data and run a quick pipeline test:
-```bash
-python -m xtope run --input antigens.csv --db test.db --tag MHHHHHHGSSG
-python -m xtope query --db test.db --id AG1
-python -m xtope stats --db test.db
-```
-
 ---
 
 ## Output CSV columns
@@ -323,10 +350,10 @@ python -m xtope stats --db test.db
 | `bit_score` | Bit-score (normalised, length-independent) |
 | `raw_score` | Raw Smith-Waterman score |
 | `aligned_region_len` | Length of the locally aligned region (amino acids) |
-| `query_length` | Length of query sequence after tag removal |
-| `target_length` | Length of target sequence after tag removal |
-| `query_stripped` | Query sequence after tag removal |
-| `target_stripped` | Target sequence after tag removal |
+| `query_length` | Length of query sequence (after tag removal if applicable) |
+| `target_length` | Length of target sequence (after tag removal if applicable) |
+| `query_stripped` | Query sequence used for alignment |
+| `target_stripped` | Target sequence used for alignment |
 
 ---
 
@@ -335,17 +362,19 @@ python -m xtope stats --db test.db
 ```
 xtope/
 ├── README.md
-├── CLAUDE.md                        # Development instructions
+├── DEVELOPMENT.md                   # Development instructions and design decisions
 ├── pyproject.toml                   # Package config (setuptools, Python ≥3.10)
 ├── requirements.txt                 # Core: numpy
 ├── requirements-optional.txt        # Optional: openpyxl (Excel export)
 ├── requirements-dev.txt             # Dev: pytest, pytest-cov, mypy, ruff
+├── data/
+│   └── test_antigens_2500.csv       # 2,500 synthetic test sequences (no N-tag)
 ├── src/
 │   └── xtope/
 │       ├── __init__.py              # Package version
 │       ├── __main__.py              # CLI: run, query, export, stats, help-scores
 │       ├── pipeline.py              # All-vs-all orchestrator with resume/checkpoint
-│       ├── tag_stripper.py          # His6-ABP tag detection and removal
+│       ├── tag_stripper.py          # N-tag detection and removal (opt-in)
 │       ├── kmer_filter.py           # K-mer inverted index, Jaccard pre-filter
 │       ├── aligner.py               # Smith-Waterman alignment scoring
 │       ├── sw_fallback.py           # Pure-Python SW implementation

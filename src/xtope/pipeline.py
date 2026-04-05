@@ -2,7 +2,7 @@
 Main pipeline orchestrator.
 Runs the full all-vs-all antigen similarity screening pipeline:
   1. Load CSV/TSV database
-  2. Strip His6-ABP tags from all sequences
+  2. Optionally strip N-terminal tags from all sequences (opt-in via tag_sequence)
   3. Build k-mer index for fast pre-filtering
   4. For each antigen, find candidates via k-mer filter, then score with SW
   5. Persist results to SQLite for future querying
@@ -15,7 +15,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Callable
 
 from .db_loader        import load_sequences
-from .tag_stripper     import strip_tag, set_tag
+from .tag_stripper     import strip_tag
 from .kmer_filter      import TwoPassFilter
 from .aligner          import batch_align, AlignmentResult
 from .store            import ResultsStore
@@ -52,7 +52,7 @@ def run_pipeline(
     Args:
         input_path:      Path to CSV/TSV antigen database
         db_path:         Path to output SQLite database
-        tag_sequence:    His6-ABP tag to strip (uses default if None)
+        tag_sequence:    N-terminal tag sequence to strip (opt-in; None = no stripping)
         id_col:          ID column name (auto-detected if None)
         seq_col:         Sequence column name (auto-detected if None)
         kmer_threshold:  Min Jaccard similarity for pre-filter (lower = more sensitive)
@@ -69,10 +69,10 @@ def run_pipeline(
     print(f"  Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
 
-    # --- Update tag if provided ---
     if tag_sequence:
-        set_tag(tag_sequence)
-        print(f"  Tag set to: {tag_sequence}\n")
+        print(f"  N-tag stripping: enabled (tag: {tag_sequence})\n")
+    else:
+        print(f"  N-tag stripping: disabled\n")
 
     # --- Load sequences ---
     print(f"[1/4] Loading sequences from: {input_path}")
@@ -80,8 +80,8 @@ def run_pipeline(
     total = len(raw_records)
     print(f"  Total antigens: {total:,}\n")
 
-    # --- Strip tags and store antigens ---
-    print(f"[2/4] Stripping His6-ABP tags...")
+    # --- Optionally strip N-tags and store antigens ---
+    print(f"[2/4] Preparing sequences...")
     store = ResultsStore(db_path)
 
     stripped_records = []
@@ -89,16 +89,23 @@ def run_pipeline(
     antigen_batch = []
 
     for antigen_id, sequence in raw_records:
-        result = strip_tag(sequence)
-        stripped = result["stripped"]
-        found    = result["tag_found"]
-        if found:
-            tag_found_count += 1
+        if tag_sequence:
+            result = strip_tag(sequence, tag=tag_sequence)
+            stripped = result["stripped"]
+            found    = result["tag_found"]
+            if found:
+                tag_found_count += 1
+        else:
+            stripped = sequence.strip().upper()
+            found    = False
         antigen_batch.append((antigen_id, sequence, stripped, found))
         stripped_records.append((antigen_id, stripped))
 
     store.upsert_antigens_batch(antigen_batch)
-    print(f"  Tags detected and removed in {tag_found_count:,} / {total:,} sequences\n")
+    if tag_sequence:
+        print(f"  N-tag detected and removed in {tag_found_count:,} / {total:,} sequences\n")
+    else:
+        print(f"  Sequences loaded as-is ({total:,} total)\n")
 
     # --- Compute database size for E-value calculation ---
     db_size = sum(len(seq) for _, seq in stripped_records)

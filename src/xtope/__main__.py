@@ -12,7 +12,7 @@ Examples:
   python -m xtope run --input antigens.csv --db results.db
   python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
   python -m xtope query --db results.db --id AG_001
-  python -m xtope query --db results.db --seq MKALVPVFAGLLLVAGLAAVHSQSLD
+  python -m xtope query --db results.db --seq ACDEFGHIKLMNPQRSTVWY
   python -m xtope export --db results.db --output results.csv --max-evalue 0.001
 """
 
@@ -56,7 +56,7 @@ def _cmd_run_kmer(args):
 def _cmd_run_vectorized(args):
     import datetime
     from xtope.db_loader import load_sequences
-    from xtope.tag_stripper import strip_tag, set_tag
+    from xtope.tag_stripper import strip_tag
     from xtope.store import ResultsStore
     from xtope.vectorized_sw import run_vectorized_pipeline
     from xtope.evalue import format_evalue
@@ -70,31 +70,39 @@ def _cmd_run_vectorized(args):
     print(f"{'='*60}\n")
 
     if args.tag:
-        set_tag(args.tag)
-        print(f"  Tag set to: {args.tag}\n")
+        print(f"  N-tag stripping: enabled (tag: {args.tag})\n")
+    else:
+        print(f"  N-tag stripping: disabled (use --tag to enable)\n")
 
     print(f"[1/3] Loading sequences from: {args.input}")
     raw_records = load_sequences(args.input, id_col=args.id_col, seq_col=args.seq_col, verbose=True)
     total = len(raw_records)
     print(f"  Total antigens: {total:,}\n")
 
-    print(f"[2/3] Stripping His6-ABP tags...")
+    print(f"[2/3] Preparing sequences...")
     store = ResultsStore(args.db)
     stripped_seqs: dict[str, str] = {}
     tag_found_count = 0
     antigen_batch = []
 
     for antigen_id, sequence in raw_records:
-        result = strip_tag(sequence)
-        stripped = result["stripped"]
-        found = result["tag_found"]
-        if found:
-            tag_found_count += 1
+        if args.tag:
+            result = strip_tag(sequence, tag=args.tag)
+            stripped = result["stripped"]
+            found = result["tag_found"]
+            if found:
+                tag_found_count += 1
+        else:
+            stripped = sequence.strip().upper()
+            found = False
         antigen_batch.append((antigen_id, sequence, stripped, found))
         stripped_seqs[antigen_id] = stripped
 
     store.upsert_antigens_batch(antigen_batch)
-    print(f"  Tags detected and removed in {tag_found_count:,} / {total:,} sequences\n")
+    if args.tag:
+        print(f"  N-tag detected and removed in {tag_found_count:,} / {total:,} sequences\n")
+    else:
+        print(f"  Sequences loaded as-is ({total:,} total)\n")
 
     prefilter = not args.no_prefilter
     print(f"[3/3] Running vectorized all-vs-all alignment...")
@@ -125,7 +133,7 @@ def _cmd_run_vectorized(args):
 
 def cmd_query(args):
     from xtope.store       import ResultsStore
-    from xtope.tag_stripper import strip_tag, set_tag
+    from xtope.tag_stripper import strip_tag
     from xtope.kmer_filter  import KmerIndex
     from xtope.aligner      import batch_align
     from xtope.evalue       import format_evalue, evalue_significance
@@ -177,11 +185,14 @@ def cmd_query(args):
     # --- Query by raw sequence (live alignment) ---
     if args.seq:
         if args.tag:
-            set_tag(args.tag)
-        stripped_info = strip_tag(args.seq)
-        stripped = stripped_info["stripped"]
-        print(f"\nQuery sequence (stripped): {stripped}")
-        print(f"Tag found: {stripped_info['tag_found']}\n")
+            stripped_info = strip_tag(args.seq, tag=args.tag)
+            stripped = stripped_info["stripped"]
+            print(f"\nQuery sequence (N-tag stripped): {stripped}")
+            print(f"N-tag found: {stripped_info['tag_found']}\n")
+        else:
+            stripped = args.seq.strip().upper()
+            print(f"\nQuery sequence: {stripped}")
+            print(f"N-tag stripping: disabled (use --tag to enable)\n")
 
         # Load all stripped sequences from DB
         print("Loading database sequences...")
@@ -353,7 +364,7 @@ def main():
     p_run = sub.add_parser("run", help="Run all-vs-all precomputation")
     p_run.add_argument("--input",         required=True,  help="Path to CSV/TSV antigen database")
     p_run.add_argument("--db",            required=True,  help="Path to output SQLite database")
-    p_run.add_argument("--tag",           default=None,   help="His6-ABP tag sequence to strip (overrides default)")
+    p_run.add_argument("--tag",           default=None,   help="N-terminal tag sequence to strip (opt-in; disabled by default)")
     p_run.add_argument("--id-col",        default=None,   help="Column name for antigen IDs")
     p_run.add_argument("--seq-col",       default=None,   help="Column name for sequences")
     p_run.add_argument("--kmer-threshold",type=float, default=0.04, help="Jaccard threshold for pre-filter (default: 0.04)")
@@ -375,7 +386,7 @@ def main():
     p_q_excl = p_q.add_mutually_exclusive_group(required=True)
     p_q_excl.add_argument("--id",     help="Antigen ID to look up precomputed results")
     p_q_excl.add_argument("--seq",    help="Raw sequence to run live alignment")
-    p_q.add_argument("--tag",         default=None, help="Tag to strip from --seq (if using live mode)")
+    p_q.add_argument("--tag",         default=None, help="N-terminal tag sequence to strip from --seq (opt-in)")
     p_q.add_argument("--max-evalue",  type=float, default=0.01, help="Max E-value threshold (default: 0.01)")
     p_q.add_argument("--min-aligned", type=int,   default=8,    help="Min aligned region length (default: 8)")
     p_q.add_argument("--top-n",       type=int,   default=25,   help="Number of results to show (default: 25)")
