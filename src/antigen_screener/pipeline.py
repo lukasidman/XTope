@@ -14,12 +14,13 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Callable
 
-from .db_loader   import load_sequences
-from .tag_stripper import strip_tag, set_tag
-from .kmer_filter  import TwoPassFilter
-from .aligner      import batch_align, AlignmentResult
-from .store        import ResultsStore
-from .evalue       import format_evalue
+from .db_loader        import load_sequences
+from .tag_stripper     import strip_tag, set_tag
+from .kmer_filter      import TwoPassFilter
+from .aligner          import batch_align, AlignmentResult
+from .store            import ResultsStore
+from .evalue           import format_evalue
+from .physicochemical  import physicochemical_similarity
 
 
 def _format_eta(seconds: float) -> str:
@@ -153,7 +154,28 @@ def run_pipeline(
             )
 
             for aln in alignments:
-                batch_buffer.append(aln.to_dict())
+                d = aln.to_dict()
+                # Physicochemical scoring on the full stripped sequences
+                pc = physicochemical_similarity(stripped_seq, index.sequences[aln.target_id])
+                sw_hit = aln.evalue <= max_evalue
+                pc_hit = pc["composite_score"] >= 0.55
+                if sw_hit and pc_hit:
+                    source = "both"
+                elif pc_hit:
+                    source = "physicochemical"
+                else:
+                    source = "sequence"
+                d.update({
+                    "hydrophobicity_corr":       round(pc["hydrophobicity_correlation"], 4),
+                    "charge_corr":               round(pc["charge_correlation"], 4),
+                    "pi_diff":                   round(pc["pi_difference"], 3),
+                    "hydrophobicity_cross_corr": round(pc["hydrophobicity_cross_corr"], 4),
+                    "charge_cross_corr":         round(pc["charge_cross_corr"], 4),
+                    "binary_hydro_cross_corr":   round(pc["binary_hydro_cross_corr"], 4),
+                    "pc_composite_score":        round(pc["composite_score"], 4),
+                    "detection_source":          source,
+                })
+                batch_buffer.append(d)
                 total_pairs_found += 1
 
         done += 1

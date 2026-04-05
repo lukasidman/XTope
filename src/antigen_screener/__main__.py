@@ -146,17 +146,31 @@ def cmd_query(args):
             print("  No similar antigens found below E-value threshold.")
         else:
             print(f"\n  {'Rank':<5} {'Partner ID':<25} {'E-value':<12} "
-                  f"{'Bit Score':<11} {'Significance':<16} {'Aligned':<9} "
-                  f"{'Q Len':<7} {'T Len'}")
-            print(f"  {'-'*5} {'-'*25} {'-'*12} {'-'*11} {'-'*16} {'-'*9} "
-                  f"{'-'*7} {'-'*6}")
+                  f"{'Bit Score':<10} {'Significance':<16} {'Aligned':<9} "
+                  f"{'PC Score':<10} {'Source'}")
+            print(f"  {'-'*5} {'-'*25} {'-'*12} {'-'*10} {'-'*16} {'-'*9} "
+                  f"{'-'*10} {'-'*14}")
             for i, r in enumerate(results, 1):
                 ev = r['evalue']
                 sig = evalue_significance(ev)
+                pc  = r['pc_composite_score']
+                src = r['detection_source'] or ""
+                pc_str  = f"{pc:.3f}" if pc is not None else "  —   "
                 print(f"  {i:<5} {r['partner_id']:<25} {format_evalue(ev):<12} "
-                      f"{r['bit_score']:<11.1f} {sig:<16} "
-                      f"{r['aligned_region_len']:<9} {r['query_length']:<7} "
-                      f"{r['target_length']}")
+                      f"{r['bit_score']:<10.1f} {sig:<16} "
+                      f"{r['aligned_region_len']:<9} {pc_str:<10} {src}")
+
+            # Show physicochemical detail for top hit if scores are present
+            top = results[0]
+            if top.get('pc_composite_score') is not None:
+                print(f"\n  Physicochemical detail (top hit: {top['partner_id']}):")
+                print(f"    Hydrophobicity corr (aligned):  {top['hydrophobicity_corr']:.3f}")
+                print(f"    Charge corr (aligned):          {top['charge_corr']:.3f}")
+                print(f"    pI difference:                  {top['pi_diff']:.2f}")
+                print(f"    Hydrophobicity cross-corr:      {top['hydrophobicity_cross_corr']:.3f}")
+                print(f"    Charge cross-corr:              {top['charge_cross_corr']:.3f}")
+                print(f"    Binary H/P cross-corr:          {top['binary_hydro_cross_corr']:.3f}")
+                print(f"    PC composite score:             {top['pc_composite_score']:.3f}  (≥0.55 = physicochemical hit)")
         store.close()
         return
 

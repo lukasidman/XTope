@@ -89,6 +89,25 @@ class ResultsStore:
             except sqlite3.OperationalError:
                 pass  # column already exists
 
+        # Physicochemical similarity columns (Track 2 scoring).
+        # NULL = not yet scored (pairs from pre-physicochemical runs).
+        for col, coltype in [
+            ("hydrophobicity_corr",      "REAL"),   # post-alignment KD correlation
+            ("charge_corr",              "REAL"),   # post-alignment charge correlation
+            ("pi_diff",                  "REAL"),   # |pI_a - pI_b|
+            ("hydrophobicity_cross_corr","REAL"),   # KD sliding-window cross-corr
+            ("charge_cross_corr",        "REAL"),   # charge sliding-window cross-corr
+            ("binary_hydro_cross_corr",  "REAL"),   # binary H/P pattern cross-corr (primary CONV signal)
+            ("pc_composite_score",       "REAL"),   # weighted composite (0–1)
+            ("detection_source",         "TEXT"),   # 'sequence', 'physicochemical', or 'both'
+        ]:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE similarities ADD COLUMN {col} {coltype}"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
     # ------------------------------------------------------------------ #
     #  Antigen records                                                     #
     # ------------------------------------------------------------------ #
@@ -129,28 +148,43 @@ class ResultsStore:
     def insert_similarities_batch(self, results: list[dict]):
         """Bulk insert similarity results. Ignores duplicates.
 
-        Handles both old-style dicts (without contiguous match fields) and
-        new-style dicts (with consec_match_len etc.) for backwards compat.
+        Handles both old-style dicts (without contiguous match / physicochemical
+        fields) and new-style dicts for backwards compatibility.
         """
         self.conn.executemany(
             """INSERT OR IGNORE INTO similarities
                (query_id, target_id, raw_score, bit_score, evalue,
                 query_length, target_length, aligned_region_len,
                 consec_match_len, consec_query_start, consec_query_end,
-                consec_target_start, consec_target_end)
+                consec_target_start, consec_target_end,
+                hydrophobicity_corr, charge_corr, pi_diff,
+                hydrophobicity_cross_corr, charge_cross_corr,
+                binary_hydro_cross_corr, pc_composite_score, detection_source)
                VALUES (:query_id, :target_id, :raw_score, :bit_score, :evalue,
                        :query_length, :target_length, :aligned_region_len,
                        :consec_match_len, :consec_query_start, :consec_query_end,
-                       :consec_target_start, :consec_target_end)""",
+                       :consec_target_start, :consec_target_end,
+                       :hydrophobicity_corr, :charge_corr, :pi_diff,
+                       :hydrophobicity_cross_corr, :charge_cross_corr,
+                       :binary_hydro_cross_corr, :pc_composite_score,
+                       :detection_source)""",
             [
                 {
-                    "consec_match_len": r.get("consec_match_len", 0),
-                    "consec_query_start": r.get("consec_query_start", -1),
-                    "consec_query_end": r.get("consec_query_end", -1),
-                    "consec_target_start": r.get("consec_target_start", -1),
-                    "consec_target_end": r.get("consec_target_end", -1),
-                    "bit_score": r.get("bit_score", 0.0),
-                    "evalue": r.get("evalue", 999.0),
+                    "consec_match_len":        r.get("consec_match_len", 0),
+                    "consec_query_start":       r.get("consec_query_start", -1),
+                    "consec_query_end":         r.get("consec_query_end", -1),
+                    "consec_target_start":      r.get("consec_target_start", -1),
+                    "consec_target_end":        r.get("consec_target_end", -1),
+                    "bit_score":                r.get("bit_score", 0.0),
+                    "evalue":                   r.get("evalue", 999.0),
+                    "hydrophobicity_corr":      r.get("hydrophobicity_corr"),
+                    "charge_corr":              r.get("charge_corr"),
+                    "pi_diff":                  r.get("pi_diff"),
+                    "hydrophobicity_cross_corr":r.get("hydrophobicity_cross_corr"),
+                    "charge_cross_corr":        r.get("charge_cross_corr"),
+                    "binary_hydro_cross_corr":  r.get("binary_hydro_cross_corr"),
+                    "pc_composite_score":       r.get("pc_composite_score"),
+                    "detection_source":         r.get("detection_source"),
                     **r,
                 }
                 for r in results
@@ -173,7 +207,10 @@ class ResultsStore:
             """SELECT
                 CASE WHEN query_id = ? THEN target_id ELSE query_id END AS partner_id,
                 raw_score, bit_score, evalue, query_length, target_length,
-                aligned_region_len
+                aligned_region_len,
+                hydrophobicity_corr, charge_corr, pi_diff,
+                hydrophobicity_cross_corr, charge_cross_corr,
+                binary_hydro_cross_corr, pc_composite_score, detection_source
                FROM similarities
                WHERE (query_id = ? OR target_id = ?)
                  AND evalue <= ?
@@ -246,6 +283,11 @@ class ResultsStore:
                 "aligned_region_len", "query_length", "target_length",
                 "consec_match_len", "consec_query_start", "consec_query_end",
                 "consec_target_start", "consec_target_end",
+                # Physicochemical Track 2 columns (NULL if not yet scored)
+                "hydrophobicity_corr", "charge_corr", "pi_diff",
+                "hydrophobicity_cross_corr", "charge_cross_corr",
+                "binary_hydro_cross_corr", "pc_composite_score",
+                "detection_source",
                 "query_stripped", "target_stripped",
             ])
             for r in rows:
@@ -256,6 +298,10 @@ class ResultsStore:
                     r["consec_match_len"], r["consec_query_start"],
                     r["consec_query_end"], r["consec_target_start"],
                     r["consec_target_end"],
+                    r["hydrophobicity_corr"], r["charge_corr"], r["pi_diff"],
+                    r["hydrophobicity_cross_corr"], r["charge_cross_corr"],
+                    r["binary_hydro_cross_corr"], r["pc_composite_score"],
+                    r["detection_source"],
                     r["query_stripped"], r["target_stripped"],
                 ])
 

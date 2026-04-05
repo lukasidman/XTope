@@ -27,6 +27,7 @@ from .evalue import (
     format_evalue,
 )
 from .ra_diagonal_filter import RADiagonalFilter
+from .physicochemical import physicochemical_similarity
 
 
 # ------------------------------------------------------------------ #
@@ -352,6 +353,41 @@ def _vectorized_bit_scores(
     return np.where(raw_scores > 0, bit_scores, 0.0)
 
 
+def _score_physicochemical(seq_a: str, seq_b: str, evalue: float, max_evalue: float) -> dict:
+    """Compute physicochemical similarity scores for one sequence pair.
+
+    Args:
+        seq_a: Stripped query sequence.
+        seq_b: Stripped target sequence.
+        evalue: SW E-value for this pair (used to set detection_source).
+        max_evalue: Pipeline E-value threshold.
+
+    Returns:
+        Dict of physicochemical fields ready to merge into a result dict.
+    """
+    pc = physicochemical_similarity(seq_a, seq_b)
+    sw_hit = evalue <= max_evalue
+    pc_hit = pc["composite_score"] >= 0.55  # calibrated threshold (100% CONV recall, 0% BG FP)
+
+    if sw_hit and pc_hit:
+        source = "both"
+    elif pc_hit:
+        source = "physicochemical"
+    else:
+        source = "sequence"
+
+    return {
+        "hydrophobicity_corr":       round(pc["hydrophobicity_correlation"], 4),
+        "charge_corr":               round(pc["charge_correlation"], 4),
+        "pi_diff":                   round(pc["pi_difference"], 3),
+        "hydrophobicity_cross_corr": round(pc["hydrophobicity_cross_corr"], 4),
+        "charge_cross_corr":         round(pc["charge_cross_corr"], 4),
+        "binary_hydro_cross_corr":   round(pc["binary_hydro_cross_corr"], 4),
+        "pc_composite_score":        round(pc["composite_score"], 4),
+        "detection_source":          source,
+    }
+
+
 def run_vectorized_pipeline(
     sequences: dict[str, str],
     store,
@@ -526,6 +562,8 @@ def run_vectorized_pipeline(
         hit_mask = (evalue_hit | consec_hit) & (min_lengths > 0)
         hit_indices = np.nonzero(hit_mask)[0]
 
+        query_seq = sorted_seqs[query_id]
+
         for ri in hit_indices:
             # Map back to global index
             if passing_indices is not None:
@@ -533,18 +571,26 @@ def run_vectorized_pipeline(
             else:
                 ti = target_start + int(ri)
 
+            target_id = ids[ti]
+            ev = float(evalues[ri])
+
             consec_len = int(result.max_consec[ri])
             end_qi = int(result.consec_end_qi[ri])
             end_tj = int(result.consec_end_tj[ri])
             start_qi = end_qi - consec_len + 1
             start_tj = end_tj - consec_len + 1
 
+            # Physicochemical scoring on the full stripped sequences
+            pc_fields = _score_physicochemical(
+                query_seq, sorted_seqs[target_id], ev, max_evalue
+            )
+
             batch_buffer.append({
                 "query_id": query_id,
-                "target_id": ids[ti],
+                "target_id": target_id,
                 "raw_score": int(result.raw_scores[ri]),
                 "bit_score": round(float(bit_scores[ri]), 1),
-                "evalue": float(evalues[ri]),
+                "evalue": ev,
                 "query_length": query_len,
                 "target_length": int(target_lengths_filtered[ri]),
                 "aligned_region_len": int(min_lengths[ri]),
@@ -553,6 +599,7 @@ def run_vectorized_pipeline(
                 "consec_query_end": end_qi if consec_len >= MIN_CONSEC_LEN else -1,
                 "consec_target_start": start_tj if consec_len >= MIN_CONSEC_LEN else -1,
                 "consec_target_end": end_tj if consec_len >= MIN_CONSEC_LEN else -1,
+                **pc_fields,
             })
         total_pairs_found += len(hit_indices)
 
