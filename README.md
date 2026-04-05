@@ -1,4 +1,13 @@
-# XTope
+```
+  ██╗  ██╗████████╗ ██████╗ ██████╗ ███████╗
+  ╚██╗██╔╝╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝
+   ╚███╔╝    ██║   ██║   ██║██████╔╝█████╗
+   ██╔██╗    ██║   ██║   ██║██╔═══╝ ██╔══╝
+  ██╔╝ ██╗   ██║   ╚██████╔╝██║     ███████╗
+  ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚══════╝
+
+  Cross-Reactivity Antigen Screener
+```
 
 Find antigens in your database that share enough sequence similarity with
 any other antigen to potentially be recognised by the same antibody.
@@ -12,29 +21,30 @@ existing database that might act as suitable capture column substitutes.
 ## How it works
 
 ```
-All antigens (CSV / TSV / FASTA)
+1. Prepare your antigen database (CSV / TSV / FASTA)
        │
        ▼
-Strip His6-ABP N-terminal tag (exact match + Smith-Waterman fallback)
+2. Strip His6-ABP N-terminal tag (exact match + Smith-Waterman fallback)
        │
        ▼
-┌──────────────────────────────────────────────────┐
-│  Choose one of two backends:                     │
-│                                                  │
-│  "kmer" (default)          "vectorized"          │
-│  Build k-mer index  →      Batched NumPy         │
-│  Jaccard pre-filter →      all-vs-all SW         │
-│  Per-pair SW                (no pre-filter)       │
-└──────────────────────────────────────────────────┘
+3. Run all-vs-all alignment
+   ┌──────────────────────────────────────────────────┐
+   │  vectorized (default)      kmer                  │
+   │  RA diagonal pre-filter →  Jaccard pre-filter →  │
+   │  Batched NumPy SW          Per-pair SW            │
+   └──────────────────────────────────────────────────┘
        │
        ▼
-Score with E-values & bit-scores (Karlin-Altschul statistics)
+4. Score with E-values & bit-scores (Karlin-Altschul statistics)
        │
        ▼
-Store significant pairs in SQLite (resumable)
+5. Store significant pairs in SQLite (resumable — safe to interrupt)
        │
        ▼
-Query anytime — instant lookup from precomputed results
+6. Query anytime — instant lookup from precomputed results
+       │
+       ▼
+7. Export to CSV for downstream analysis
 ```
 
 ---
@@ -61,15 +71,7 @@ pip install -e ".[dev]"
 
 ## Quick start
 
-### 1. Set your His6-ABP tag
-
-Pass the tag via the `--tag` CLI flag. The default is `MHHHHHHGSSG`.
-
-```bash
-python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
-```
-
-### 2. Prepare your input file
+### 1. Prepare your input file
 
 The tool accepts **CSV**, **TSV**, and **FASTA** files. Delimiters (comma, semicolon, tab) are auto-detected using `csv.Sniffer` — no configuration needed.
 
@@ -101,6 +103,14 @@ Example FASTA:
 MHHHHHHGSSGARKLVTPQIYWDG...
 >AG_002
 MHHHHHHGSSGPVALKEQRTMWDNF...
+```
+
+### 2. Set your His6-ABP tag
+
+Pass the tag via the `--tag` CLI flag. The default is `MHHHHHHGSSG`.
+
+```bash
+python -m xtope run --input antigens.csv --db results.db --tag MHHHHHHGSSG
 ```
 
 ### 3. Run the precomputation
@@ -147,6 +157,7 @@ This will run for hours/days on 80,000 sequences — that's expected and fine.
 where it left off. Use `--no-resume` to start fresh.
 
 ### 4. Query results
+
 
 Look up precomputed similar antigens for a known ID:
 ```bash
