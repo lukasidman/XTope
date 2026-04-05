@@ -304,12 +304,50 @@ def cmd_help_scores(args):
 """)
 
 
+def cmd_splash():
+    """Print the XTope start page."""
+    print("""
+  ██╗  ██╗████████╗ ██████╗ ██████╗ ███████╗
+  ╚██╗██╔╝╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝
+   ╚███╔╝    ██║   ██║   ██║██████╔╝█████╗
+   ██╔██╗    ██║   ██║   ██║██╔═══╝ ██╔══╝
+  ██╔╝ ██╗   ██║   ╚██████╔╝██║     ███████╗
+  ╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝     ╚══════╝
+
+  Cross-Reactivity Antigen Screener
+  ──────────────────────────────────────────────────────
+
+  COMMON COMMANDS
+
+    Run all-vs-all screening
+      python -m xtope run --input antigens.csv --db results.db
+
+    Query an antigen by ID
+      python -m xtope query --db results.db --id AG_001
+
+    Query a raw sequence (live alignment)
+      python -m xtope query --db results.db --seq MKALVPVFA...
+
+    Export results to CSV
+      python -m xtope export --db results.db --output results.csv
+
+    Show database statistics
+      python -m xtope stats --db results.db
+
+    Score interpretation guide
+      python -m xtope help-scores
+
+  ──────────────────────────────────────────────────────
+  Use  python -m xtope <command> --help  for full options.
+""")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="xtope",
         description="Antibody cross-reactivity screener via antigen sequence similarity",
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=False)
 
     # ---- run ----
     p_run = sub.add_parser("run", help="Run all-vs-all precomputation")
@@ -360,6 +398,11 @@ def main():
     p_hs.set_defaults(func=cmd_help_scores)
 
     args = parser.parse_args()
+
+    if not args.command:
+        cmd_splash()
+        sys.exit(0)
+
     t0 = time.perf_counter()
     args.func(args)
     elapsed = time.perf_counter() - t0
